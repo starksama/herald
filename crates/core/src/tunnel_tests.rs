@@ -269,4 +269,112 @@ mod tests {
         assert_eq!(parsed.metadata["tags"][0], "ai");
         assert_eq!(parsed.metadata["nested"]["number"], 42);
     }
+
+    // ============================================================
+    // Edge Case Tests
+    // ============================================================
+
+    #[test]
+    fn test_invalid_json_deserialization_client_message() {
+        let invalid_json = r#"{"type": "unknown_type"}"#;
+        let result: Result<ClientMessage, _> = serde_json::from_str(invalid_json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_json_deserialization_server_message() {
+        let invalid_json = r#"{"type": "invalid_message_type"}"#;
+        let result: Result<ServerMessage, _> = serde_json::from_str(invalid_json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_malformed_json_deserialization() {
+        let malformed = r#"{"type": "auth", "token": }"#;
+        let result: Result<ClientMessage, _> = serde_json::from_str(malformed);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_client_auth_empty_token() {
+        let msg = ClientMessage::Auth {
+            token: "".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: ClientMessage = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ClientMessage::Auth { token } => assert!(token.is_empty()),
+            _ => panic!("Expected Auth message"),
+        }
+    }
+
+    #[test]
+    fn test_tunnel_signal_with_null_metadata() {
+        let signal = TunnelSignal {
+            id: "sig_null".to_string(),
+            title: "Null Metadata".to_string(),
+            body: "Testing null".to_string(),
+            urgency: SignalUrgency::Normal,
+            metadata: serde_json::Value::Null,
+            created_at: Utc::now(),
+        };
+
+        let json = serde_json::to_string(&signal).unwrap();
+        let parsed: TunnelSignal = serde_json::from_str(&json).unwrap();
+        assert!(parsed.metadata.is_null());
+    }
+
+    #[test]
+    fn test_tunnel_signal_with_empty_strings() {
+        let signal = TunnelSignal {
+            id: "".to_string(),
+            title: "".to_string(),
+            body: "".to_string(),
+            urgency: SignalUrgency::Low,
+            metadata: serde_json::json!({}),
+            created_at: Utc::now(),
+        };
+
+        let json = serde_json::to_string(&signal).unwrap();
+        let parsed: TunnelSignal = serde_json::from_str(&json).unwrap();
+        assert!(parsed.id.is_empty());
+        assert!(parsed.title.is_empty());
+        assert!(parsed.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_registry_unregister_nonexistent() {
+        let registry = AgentRegistry::new();
+        // Should not panic when unregistering non-existent subscriber
+        registry.unregister("nonexistent_subscriber").await;
+        assert!(registry.get("nonexistent_subscriber").await.is_none());
+    }
+
+    #[test]
+    fn test_server_auth_error_with_special_characters() {
+        let msg = ServerMessage::AuthError {
+            message: "Invalid token: \"test\" <script>alert(1)</script>".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: ServerMessage = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ServerMessage::AuthError { message } => {
+                assert!(message.contains("<script>"));
+            }
+            _ => panic!("Expected AuthError message"),
+        }
+    }
+
+    #[test]
+    fn test_client_ack_empty_delivery_id() {
+        let msg = ClientMessage::Ack {
+            delivery_id: "".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: ClientMessage = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ClientMessage::Ack { delivery_id } => assert!(delivery_id.is_empty()),
+            _ => panic!("Expected Ack message"),
+        }
+    }
 }

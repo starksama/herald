@@ -76,3 +76,126 @@ impl IntoResponse for ApiError {
 }
 
 pub type ApiResult<T> = Result<T, ApiError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::response::IntoResponse;
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_with_request_id() {
+        let err = AppError::Internal.with_request_id("req_123");
+        assert_eq!(err.request_id, "req_123");
+    }
+
+    #[test]
+    fn test_with_request_id_empty() {
+        let err = AppError::Unauthorized.with_request_id("");
+        assert_eq!(err.request_id, "");
+    }
+
+    #[test]
+    fn test_bad_request_response() {
+        rt().block_on(async {
+            let err = AppError::BadRequest("missing field".to_string()).with_request_id("req_001");
+            let response = err.into_response();
+
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+            let body = to_bytes(response.into_body(), 1024).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+            assert_eq!(json["error"]["code"], "invalid_request");
+            assert_eq!(json["error"]["message"], "missing field");
+            assert_eq!(json["error"]["request_id"], "req_001");
+        });
+    }
+
+    #[test]
+    fn test_unauthorized_response() {
+        rt().block_on(async {
+            let err = AppError::Unauthorized.with_request_id("req_002");
+            let response = err.into_response();
+
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+            let body = to_bytes(response.into_body(), 1024).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+            assert_eq!(json["error"]["code"], "unauthorized");
+            assert_eq!(json["error"]["message"], "Invalid API key");
+        });
+    }
+
+    #[test]
+    fn test_forbidden_response() {
+        rt().block_on(async {
+            let err = AppError::Forbidden("no access".to_string()).with_request_id("req_003");
+            let response = err.into_response();
+
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+            let body = to_bytes(response.into_body(), 1024).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+            assert_eq!(json["error"]["code"], "forbidden");
+            assert_eq!(json["error"]["message"], "no access");
+        });
+    }
+
+    #[test]
+    fn test_not_found_response() {
+        rt().block_on(async {
+            let err = AppError::NotFound("channel xyz".to_string()).with_request_id("req_004");
+            let response = err.into_response();
+
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+            let body = to_bytes(response.into_body(), 1024).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+            assert_eq!(json["error"]["code"], "not_found");
+            assert_eq!(json["error"]["message"], "channel xyz");
+        });
+    }
+
+    #[test]
+    fn test_rate_limited_response() {
+        rt().block_on(async {
+            let err = AppError::RateLimited.with_request_id("req_005");
+            let response = err.into_response();
+
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+
+            let body = to_bytes(response.into_body(), 1024).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+            assert_eq!(json["error"]["code"], "rate_limited");
+            assert_eq!(json["error"]["message"], "Too many requests");
+        });
+    }
+
+    #[test]
+    fn test_internal_error_response() {
+        rt().block_on(async {
+            let err = AppError::Internal.with_request_id("req_006");
+            let response = err.into_response();
+
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+            let body = to_bytes(response.into_body(), 1024).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+            assert_eq!(json["error"]["code"], "internal_error");
+            assert_eq!(json["error"]["message"], "Unexpected error");
+        });
+    }
+}

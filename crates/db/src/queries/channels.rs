@@ -1,7 +1,15 @@
+//! Channel database operations.
+//!
+//! Channels are the core broadcasting primitive in Herald. Publishers create
+//! channels to group related signals, and subscribers subscribe to receive them.
+
 use crate::models::{Channel, ChannelStatus, PricingTier};
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, QueryBuilder};
 
+/// Create a new channel for a publisher.
+///
+/// Returns the created channel with default status (active) and zero counts.
 #[allow(clippy::too_many_arguments)]
 pub async fn create(
     pool: &PgPool,
@@ -39,6 +47,7 @@ pub async fn create(
     .await
 }
 
+/// Fetch a channel by its unique ID.
 pub async fn get_by_id(pool: &PgPool, id: &str) -> Result<Option<Channel>, sqlx::Error> {
     sqlx::query_as::<_, Channel>(
         r#"
@@ -54,6 +63,9 @@ pub async fn get_by_id(pool: &PgPool, id: &str) -> Result<Option<Channel>, sqlx:
     .await
 }
 
+/// List all public, active channels for the marketplace.
+///
+/// Returns channels ordered by creation date (newest first).
 pub async fn list_marketplace(pool: &PgPool) -> Result<Vec<Channel>, sqlx::Error> {
     sqlx::query_as::<_, Channel>(
         r#"
@@ -69,6 +81,10 @@ pub async fn list_marketplace(pool: &PgPool) -> Result<Vec<Channel>, sqlx::Error
     .await
 }
 
+/// Update a channel's mutable fields.
+///
+/// Only non-None fields are updated. Returns an error if no fields are provided.
+/// On success, returns (id, display_name, updated_at).
 #[allow(clippy::too_many_arguments)]
 pub async fn update(
     pool: &PgPool,
@@ -130,6 +146,9 @@ pub async fn update(
     Ok(record)
 }
 
+/// Soft-delete a channel by setting status to 'deleted' and hiding from marketplace.
+///
+/// This preserves the channel data for audit purposes while preventing new subscriptions.
 pub async fn soft_delete(pool: &PgPool, id: &str) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
@@ -144,6 +163,9 @@ pub async fn soft_delete(pool: &PgPool, id: &str) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+/// Atomically increment the signal count for a channel.
+///
+/// Use negative delta to decrement (e.g., when a signal is deleted).
 pub async fn increment_signal_count(
     pool: &PgPool,
     channel_id: &str,
@@ -164,6 +186,9 @@ pub async fn increment_signal_count(
     Ok(())
 }
 
+/// Atomically increment the subscriber count for a channel.
+///
+/// Use negative delta to decrement (e.g., when a subscription is canceled).
 pub async fn increment_subscriber_count(
     pool: &PgPool,
     channel_id: &str,

@@ -1,6 +1,14 @@
+//! Delivery database operations.
+//!
+//! Deliveries track individual attempts to send a signal to a subscriber,
+//! either via webhook or agent tunnel.
+
 use crate::models::{Delivery, DeliveryMode, DeliveryStatus};
 use sqlx::PgPool;
 
+/// Create a new delivery record for a signal-subscription pair.
+///
+/// Returns the delivery with status initialized to 'pending'.
 pub async fn create(
     pool: &PgPool,
     id: &str,
@@ -29,6 +37,10 @@ pub async fn create(
     .await
 }
 
+/// Update a delivery's status after an attempt completes.
+///
+/// Records the HTTP status code (for webhooks), any error message,
+/// and the round-trip latency for monitoring.
 pub async fn update_status(
     pool: &PgPool,
     id: &str,
@@ -58,6 +70,9 @@ pub async fn update_status(
     Ok(())
 }
 
+/// List deliveries for a specific webhook with cursor-based pagination.
+///
+/// Returns deliveries ordered by creation date (newest first).
 pub async fn list_by_webhook(
     pool: &PgPool,
     webhook_id: &str,
@@ -100,6 +115,7 @@ pub async fn list_by_webhook(
     }
 }
 
+/// List all deliveries for a specific signal (across all subscribers).
 pub async fn list_by_signal(pool: &PgPool, signal_id: &str) -> Result<Vec<Delivery>, sqlx::Error> {
     sqlx::query_as::<_, Delivery>(
         r#"
@@ -116,6 +132,7 @@ pub async fn list_by_signal(pool: &PgPool, signal_id: &str) -> Result<Vec<Delive
     .await
 }
 
+/// Fetch a delivery by its unique ID.
 pub async fn get_by_id(pool: &PgPool, id: &str) -> Result<Option<Delivery>, sqlx::Error> {
     sqlx::query_as::<_, Delivery>(
         r#"

@@ -1,6 +1,14 @@
+//! Signal database operations.
+//!
+//! Signals are the core notification unit in Herald. Publishers create signals
+//! on channels, which are then delivered to all channel subscribers.
+
 use crate::models::{Signal, SignalStatus, SignalUrgency};
 use sqlx::PgPool;
 
+/// Create a new signal on a channel.
+///
+/// Returns the created signal with delivery counts initialized to zero.
 pub async fn create(
     pool: &PgPool,
     id: &str,
@@ -28,6 +36,7 @@ pub async fn create(
     .await
 }
 
+/// Fetch a signal by its unique ID.
 pub async fn get_by_id(pool: &PgPool, id: &str) -> Result<Option<Signal>, sqlx::Error> {
     sqlx::query_as::<_, Signal>(
         r#"
@@ -42,6 +51,10 @@ pub async fn get_by_id(pool: &PgPool, id: &str) -> Result<Option<Signal>, sqlx::
     .await
 }
 
+/// List signals for a channel with cursor-based pagination.
+///
+/// Returns signals ordered by creation date (newest first).
+/// Use the last signal's ID as the cursor for the next page.
 pub async fn list_by_channel(
     pool: &PgPool,
     channel_id: &str,
@@ -82,6 +95,7 @@ pub async fn list_by_channel(
     }
 }
 
+/// Update a signal's status (e.g., to mark as deleted).
 pub async fn update_status(
     pool: &PgPool,
     id: &str,
@@ -101,6 +115,10 @@ pub async fn update_status(
     Ok(())
 }
 
+/// Atomically update delivery statistics for a signal.
+///
+/// Called by the delivery worker after each delivery attempt to track
+/// success/failure rates across all subscribers.
 pub async fn increment_delivery_counts(
     pool: &PgPool,
     signal_id: &str,

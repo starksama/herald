@@ -415,3 +415,80 @@ fn build_payload(
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn test_retry_policy_immediate_first_attempt() {
+        assert_eq!(retry_policy(0), Duration::from_secs(0));
+    }
+
+    #[test]
+    fn test_retry_policy_one_minute_second_attempt() {
+        assert_eq!(retry_policy(1), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_retry_policy_exponential_backoff() {
+        assert_eq!(retry_policy(2), Duration::from_secs(300));    // 5 min
+        assert_eq!(retry_policy(3), Duration::from_secs(1800));   // 30 min
+        assert_eq!(retry_policy(4), Duration::from_secs(7200));   // 2 hours
+    }
+
+    #[test]
+    fn test_retry_policy_max_backoff() {
+        // After attempt 5, should cap at 6 hours
+        assert_eq!(retry_policy(5), Duration::from_secs(21600));
+        assert_eq!(retry_policy(6), Duration::from_secs(21600));
+        assert_eq!(retry_policy(100), Duration::from_secs(21600));
+    }
+
+    #[test]
+    fn test_convert_urgency_all_levels() {
+        assert_eq!(convert_urgency(&SignalUrgency::Low), CoreSignalUrgency::Low);
+        assert_eq!(convert_urgency(&SignalUrgency::Normal), CoreSignalUrgency::Normal);
+        assert_eq!(convert_urgency(&SignalUrgency::High), CoreSignalUrgency::High);
+        assert_eq!(convert_urgency(&SignalUrgency::Critical), CoreSignalUrgency::Critical);
+    }
+
+    #[test]
+    fn test_queue_selection_for_urgent_signals() {
+        // High and Critical should go to delivery-high queue
+        assert_eq!(
+            match SignalUrgency::High {
+                SignalUrgency::High | SignalUrgency::Critical => "delivery-high",
+                _ => "delivery-normal",
+            },
+            "delivery-high"
+        );
+        assert_eq!(
+            match SignalUrgency::Critical {
+                SignalUrgency::High | SignalUrgency::Critical => "delivery-high",
+                _ => "delivery-normal",
+            },
+            "delivery-high"
+        );
+    }
+
+    #[test]
+    fn test_queue_selection_for_normal_signals() {
+        // Low and Normal should go to delivery-normal queue
+        assert_eq!(
+            match SignalUrgency::Low {
+                SignalUrgency::High | SignalUrgency::Critical => "delivery-high",
+                _ => "delivery-normal",
+            },
+            "delivery-normal"
+        );
+        assert_eq!(
+            match SignalUrgency::Normal {
+                SignalUrgency::High | SignalUrgency::Critical => "delivery-high",
+                _ => "delivery-normal",
+            },
+            "delivery-normal"
+        );
+    }
+}

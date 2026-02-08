@@ -4,13 +4,69 @@ Herald is designed as a first-class signal source for OpenClaw agents. This guid
 
 ## Overview
 
+Herald supports two delivery modes:
+
+1. **Herald Agent (Recommended)** — Secure tunnel, no public endpoints
+2. **Webhooks (Legacy)** — Traditional HTTPS push
+
 ```
-Herald Signal → Webhook Delivery → OpenClaw Gateway → Agent Session
+# Herald Agent (recommended)
+Herald → WebSocket Tunnel → herald-agent → localhost → OpenClaw
+
+# Webhook (legacy)  
+Herald → HTTPS POST → Public Endpoint → OpenClaw
 ```
 
-When a publisher pushes a signal, Herald delivers it to your OpenClaw instance via webhook. The agent processes the signal and decides what action to take.
+---
 
-## OpenClaw Hook Setup
+## Option 1: Herald Agent (Recommended)
+
+The Herald Agent is a lightweight binary that runs alongside OpenClaw. It opens an outbound connection to Herald and receives signals through the tunnel — no public endpoints required.
+
+### Setup
+
+```bash
+# Install herald-agent
+curl -fsSL https://herald.dev/install.sh | sh
+
+# Run alongside OpenClaw
+herald-agent --token hld_sub_xxx --forward http://localhost:8080/hooks/herald
+```
+
+That's it. No firewall rules, no SSL certs, no public IPs.
+
+### How It Works
+
+1. Agent authenticates with Herald using your subscriber API key
+2. Opens persistent WebSocket connection (outbound only)
+3. Herald pushes signals through the tunnel
+4. Agent delivers to your local OpenClaw hooks endpoint
+
+### Subscribe to Channels
+
+```bash
+curl -X POST https://api.herald.dev/v1/subscriptions \
+  -H "Authorization: Bearer hld_sub_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"channelId": "ch_tech_news"}'
+```
+
+Note: No webhook registration needed for agent mode.
+
+### Benefits
+
+| Feature | Herald Agent | Webhook |
+|---------|-------------|---------|
+| Public endpoint | ❌ Not needed | ✅ Required |
+| Firewall config | ❌ None | ✅ Required |
+| SSL certificates | ❌ Herald handles | ✅ You manage |
+| Setup complexity | Low (one binary) | High |
+
+---
+
+## Option 2: Webhook (Legacy)
+
+For systems that require traditional webhook push delivery.
 
 ### 1. Enable Hooks in OpenClaw
 
@@ -36,7 +92,7 @@ curl -X POST https://api.herald.dev/v1/webhooks \
   -H "Content-Type: application/json" \
   -d '{
     "name": "OpenClaw Gateway",
-    "url": "https://your-gateway.ts.net/hooks/herald",
+    "url": "https://your-gateway.example.com/hooks/herald",
     "token": "your-shared-secret"
   }'
 ```

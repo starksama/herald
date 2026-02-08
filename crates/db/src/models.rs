@@ -1,7 +1,17 @@
+//! Database models for Herald.
+//!
+//! These types mirror `core::types` but include sqlx derives for database
+//! operations. The separation allows the core crate to remain database-agnostic
+//! while this crate handles persistence concerns.
+//!
+//! When modifying types here, ensure `crates/core/src/types.rs` is updated
+//! as well to maintain consistency.
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
+/// Pricing tier for channels (database model).
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "pricing_tier", rename_all = "lowercase")]
 pub enum PricingTier {

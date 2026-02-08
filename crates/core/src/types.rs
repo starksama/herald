@@ -1,6 +1,16 @@
+//! Domain types for Herald.
+//!
+//! This module contains the core domain types used throughout Herald.
+//! These types are database-agnostic and use only serde for serialization.
+//!
+//! Note: `crates/db/src/models.rs` contains parallel definitions with sqlx
+//! derives for database operations. When modifying types here, ensure the
+//! corresponding db model is updated as well.
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Pricing tier for channels.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PricingTier {
@@ -9,6 +19,7 @@ pub enum PricingTier {
     Enterprise,
 }
 
+/// Account tier for publishers and subscribers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AccountTier {
@@ -17,6 +28,7 @@ pub enum AccountTier {
     Enterprise,
 }
 
+/// Account lifecycle status.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AccountStatus {
@@ -25,6 +37,7 @@ pub enum AccountStatus {
     Deleted,
 }
 
+/// Channel lifecycle status.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ChannelStatus {
@@ -33,6 +46,7 @@ pub enum ChannelStatus {
     Deleted,
 }
 
+/// Signal urgency level, affects delivery priority.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SignalUrgency {
@@ -42,6 +56,7 @@ pub enum SignalUrgency {
     Critical,
 }
 
+/// Signal lifecycle status.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SignalStatus {
@@ -49,6 +64,7 @@ pub enum SignalStatus {
     Deleted,
 }
 
+/// Subscription lifecycle status.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SubscriptionStatus {
@@ -57,14 +73,17 @@ pub enum SubscriptionStatus {
     Canceled,
 }
 
+/// Webhook endpoint status.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum WebhookStatus {
     Active,
     Paused,
+    /// Automatically disabled after repeated failures.
     Disabled,
 }
 
+/// Delivery attempt status.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DeliveryStatus {
@@ -73,13 +92,17 @@ pub enum DeliveryStatus {
     Failed,
 }
 
+/// How signals are delivered to subscribers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DeliveryMode {
+    /// Via persistent WebSocket tunnel (herald-agent).
     Agent,
+    /// Via HTTP POST to subscriber's endpoint.
     Webhook,
 }
 
+/// API key owner type.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ApiKeyOwner {
@@ -87,6 +110,7 @@ pub enum ApiKeyOwner {
     Subscriber,
 }
 
+/// API key lifecycle status.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ApiKeyStatus {
@@ -95,6 +119,7 @@ pub enum ApiKeyStatus {
     Expired,
 }
 
+/// A publisher who creates channels and sends signals.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Publisher {
     pub id: String,
@@ -108,32 +133,39 @@ pub struct Publisher {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A subscriber who receives signals from subscribed channels.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Subscriber {
     pub id: String,
     pub name: String,
     pub email: String,
+    /// Secret used to sign webhook payloads for this subscriber.
     pub webhook_secret: String,
     pub stripe_customer_id: Option<String>,
     pub tier: AccountTier,
     pub status: AccountStatus,
     pub delivery_mode: DeliveryMode,
+    /// Last time the subscriber's agent connected via tunnel.
     pub agent_last_connected_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
+/// A channel that publishers use to broadcast signals.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Channel {
     pub id: String,
     pub publisher_id: String,
+    /// URL-friendly identifier (e.g., "my-alerts").
     pub slug: String,
     pub display_name: String,
     pub description: Option<String>,
     pub category: Option<String>,
     pub pricing_tier: PricingTier,
+    /// Monthly subscription price in cents.
     pub price_cents: i32,
     pub status: ChannelStatus,
+    /// Whether the channel is listed in the marketplace.
     pub is_public: bool,
     pub signal_count: i32,
     pub subscriber_count: i32,
@@ -141,6 +173,7 @@ pub struct Channel {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A signal (notification) sent through a channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Signal {
     pub id: String,
@@ -148,7 +181,9 @@ pub struct Signal {
     pub title: String,
     pub body: String,
     pub urgency: SignalUrgency,
+    /// Arbitrary JSON metadata attached to the signal.
     pub metadata: serde_json::Value,
+    /// Total delivery attempts across all subscribers.
     pub delivery_count: i32,
     pub delivered_count: i32,
     pub failed_count: i32,
@@ -156,14 +191,17 @@ pub struct Signal {
     pub created_at: DateTime<Utc>,
 }
 
+/// A webhook endpoint configured by a subscriber.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Webhook {
     pub id: String,
     pub subscriber_id: String,
     pub url: String,
     pub name: String,
+    /// Optional bearer token sent in Authorization header.
     pub token: Option<String>,
     pub status: WebhookStatus,
+    /// Consecutive failure count (resets on success).
     pub failure_count: i32,
     pub last_success_at: Option<DateTime<Utc>>,
     pub last_failure_at: Option<DateTime<Utc>>,
@@ -171,11 +209,13 @@ pub struct Webhook {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A subscription linking a subscriber to a channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Subscription {
     pub id: String,
     pub subscriber_id: String,
     pub channel_id: String,
+    /// If set, signals are delivered to this webhook instead of the default.
     pub webhook_id: Option<String>,
     pub status: SubscriptionStatus,
     pub stripe_subscription_id: Option<String>,
@@ -183,6 +223,7 @@ pub struct Subscription {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A single delivery attempt of a signal to a subscriber.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Delivery {
     pub id: String,
@@ -190,23 +231,30 @@ pub struct Delivery {
     pub subscription_id: String,
     pub webhook_id: Option<String>,
     pub delivery_mode: DeliveryMode,
+    /// Attempt number (1 for first attempt, increments on retry).
     pub attempt: i32,
     pub status: DeliveryStatus,
+    /// HTTP status code from webhook response (if applicable).
     pub status_code: Option<i32>,
     pub error_message: Option<String>,
+    /// Round-trip latency in milliseconds.
     pub latency_ms: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
+/// An API key for authenticating publishers or subscribers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKey {
     pub id: String,
+    /// SHA-256 hash of the raw key (raw key never stored).
     pub key_hash: String,
+    /// First 12 chars of the key for identification (e.g., "hld_pub_xxxx").
     pub key_prefix: String,
     pub owner_type: ApiKeyOwner,
     pub owner_id: String,
     pub name: Option<String>,
+    /// Permission scopes (e.g., ["signals:write", "channels:read"]).
     pub scopes: Vec<String>,
     pub last_used_at: Option<DateTime<Utc>>,
     pub expires_at: Option<DateTime<Utc>>,
@@ -214,18 +262,22 @@ pub struct ApiKey {
     pub created_at: DateTime<Utc>,
 }
 
+/// Failed delivery stored for manual inspection and retry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeadLetterEntry {
     pub id: String,
     pub delivery_id: String,
     pub signal_id: String,
     pub subscription_id: String,
+    /// Original signal payload for replay.
     pub payload: serde_json::Value,
+    /// Array of error messages from each failed attempt.
     pub error_history: serde_json::Value,
     pub resolved_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
 
+/// Job payload for the delivery worker queue.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeliveryJob {
     pub signal_id: String,

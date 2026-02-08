@@ -199,6 +199,9 @@ async fn handle_client_message(subscriber_id: &str, text: &str) {
     }
 }
 
+/// Convert db SignalUrgency to core SignalUrgency.
+/// Used when delivering signals through the tunnel.
+#[allow(dead_code)]
 fn convert_urgency(urgency: &SignalUrgency) -> CoreSignalUrgency {
     match urgency {
         SignalUrgency::Low => CoreSignalUrgency::Low,
@@ -208,6 +211,9 @@ fn convert_urgency(urgency: &SignalUrgency) -> CoreSignalUrgency {
     }
 }
 
+/// Convert a db Signal to a TunnelSignal for delivery.
+/// Used when pushing signals through connected agents.
+#[allow(dead_code)]
 pub fn to_tunnel_signal(signal: &db::models::Signal) -> TunnelSignal {
     TunnelSignal {
         id: signal.id.clone(),

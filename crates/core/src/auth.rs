@@ -18,9 +18,15 @@ pub fn hash_api_key(raw: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Sign a payload with HMAC-SHA256.
+/// 
+/// Note: new_from_slice only fails for algorithms with key length constraints.
+/// SHA256 accepts any key length, so this is infallible in practice.
 pub fn sign_payload(secret: &str, timestamp: i64, body: &str) -> String {
     let data = format!("{}.{}", timestamp, body);
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC key");
+    // HMAC-SHA256 accepts any key length, so this cannot fail
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+        .expect("HMAC-SHA256 accepts any key length");
     mac.update(data.as_bytes());
     format!("sha256={:x}", mac.finalize().into_bytes())
 }

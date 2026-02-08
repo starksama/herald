@@ -321,6 +321,7 @@ async fn deliver_via_tunnel(
     Ok(true)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_tunnel_failure(
     state: &WorkerState,
     signal: &db::models::Signal,

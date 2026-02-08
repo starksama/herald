@@ -57,7 +57,7 @@ async fn allow_request(
 ) -> redis::RedisResult<bool> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or(std::time::Duration::ZERO)
         .as_secs();
     let bucket_key = format!("rl:{}", key);
 

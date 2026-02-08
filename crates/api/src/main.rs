@@ -1,4 +1,5 @@
-use axum::{middleware::from_fn_with_state, Router};
+use axum::{middleware::from_fn, middleware::from_fn_with_state, Router};
+use core::config::Settings;
 use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -10,11 +11,13 @@ mod routes;
 mod state;
 
 use crate::middleware::auth::api_key_auth;
+use crate::middleware::metrics::metrics;
+use crate::middleware::rate_limit::rate_limit;
+use crate::middleware::request_id::request_id;
 use crate::state::AppState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Load .env file if present
     dotenvy::dotenv().ok();
 
     tracing_subscriber::fmt()
@@ -22,37 +25,35 @@ async fn main() -> anyhow::Result<()> {
         .json()
         .init();
 
-    let database_url = std::env::var("HERALD_DATABASE_URL")
-        .or_else(|_| std::env::var("DATABASE_URL"))
-        .expect("DATABASE_URL or HERALD_DATABASE_URL must be set");
-    let redis_url = std::env::var("HERALD_REDIS_URL")
-        .or_else(|_| std::env::var("REDIS_URL"))
-        .expect("REDIS_URL or HERALD_REDIS_URL must be set");
-    let herald_env = std::env::var("HERALD_ENV").unwrap_or_else(|_| "development".to_string());
+    let settings = Settings::from_env()?;
 
     let db = PgPoolOptions::new()
         .max_connections(10)
-        .connect(&database_url)
+        .connect(&settings.database_url)
         .await?;
 
-    let redis = redis::Client::open(redis_url)?;
+    let redis = redis::Client::open(settings.redis_url.clone())?;
+    let storage = apalis::postgres::PostgresStorage::new(&settings.database_url).await?;
 
     let state = AppState {
         db,
         redis,
-        herald_env,
+        storage,
+        settings: settings.clone(),
     };
 
-    let v1 = routes::v1_router(state.clone()).layer(from_fn_with_state(state.clone(), api_key_auth));
+    let v1 = routes::v1_router(state.clone())
+        .layer(from_fn_with_state(state.clone(), rate_limit))
+        .layer(from_fn_with_state(state.clone(), api_key_auth))
+        .layer(from_fn(metrics))
+        .layer(from_fn(request_id));
 
     let app = Router::new()
         .merge(routes::health_router(state.clone()))
-        .merge(v1);
+        .merge(v1)
+        .layer(axum::extract::DefaultBodyLimit::max(1_048_576));
 
-    let addr: SocketAddr = std::env::var("HERALD_API_BIND")
-        .unwrap_or_else(|_| "0.0.0.0:3000".to_string())
-        .parse()?;
-
+    let addr: SocketAddr = settings.api_bind.parse()?;
     info!(%addr, "starting api");
 
     let listener = TcpListener::bind(addr).await?;

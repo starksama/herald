@@ -1,54 +1,57 @@
 use axum::{
-    extract::{Path, State},
-    routing::{delete, get, patch, post},
+    extract::{Path, Query, State},
+    routing::{get, patch, post},
     Extension, Json, Router,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::QueryBuilder;
 
 use crate::{
-    error::{ApiError, ApiResult},
-    middleware::auth::{AuthContext, OwnerType},
-    state::AppState,
+    error::{ApiError, ApiResult, AppError},
+    middleware::auth::AuthContext,
+    state::{AppState, RequestId},
 };
+use db::models::{ApiKeyOwner, DeliveryStatus, WebhookStatus};
 
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route("/v1/webhooks", post(register_webhook).get(list_webhooks))
-        .route("/v1/webhooks/{id}", patch(update_webhook).delete(delete_webhook))
+        .route("/v1/webhooks", post(create_webhook).get(list_webhooks))
+        .route(
+            "/v1/webhooks/:id",
+            patch(update_webhook).delete(delete_webhook),
+        )
+        .route("/v1/webhooks/:id/deliveries", get(list_deliveries))
         .with_state(state)
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RegisterWebhookRequest {
+struct CreateWebhookRequest {
     name: String,
     url: String,
     token: Option<String>,
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct RegisterWebhookResponse {
+struct CreateWebhookResponse {
     id: String,
-    status: String,
+    status: WebhookStatus,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WebhookListResponse {
-    items: Vec<WebhookListItem>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WebhookListItem {
+struct WebhookItem {
     id: String,
     name: String,
     url: String,
-    status: String,
-    created_at: DateTime<Utc>,
+    status: WebhookStatus,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ListWebhooksResponse {
+    items: Vec<WebhookItem>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,15 +59,13 @@ struct WebhookListItem {
 struct UpdateWebhookRequest {
     name: Option<String>,
     url: Option<String>,
-    token: Option<String>,
-    status: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateWebhookResponse {
     id: String,
-    status: String,
+    status: WebhookStatus,
     updated_at: DateTime<Utc>,
 }
 
@@ -72,222 +73,237 @@ struct UpdateWebhookResponse {
 #[serde(rename_all = "camelCase")]
 struct DeleteWebhookResponse {
     id: String,
-    status: String,
+    status: WebhookStatus,
 }
 
-#[derive(Debug, sqlx::FromRow)]
-struct WebhookRow {
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListDeliveriesQuery {
+    limit: Option<i64>,
+    cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeliveryItem {
     id: String,
-    subscriber_id: String,
-    name: String,
-    url: String,
-    status: String,
-    created_at: DateTime<Utc>,
+    status: DeliveryStatus,
+    attempt: i32,
+    status_code: Option<i32>,
+    latency_ms: Option<i32>,
 }
 
-#[derive(Debug, sqlx::FromRow)]
-struct UpdateWebhookRow {
-    id: String,
-    status: String,
-    updated_at: DateTime<Utc>,
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ListDeliveriesResponse {
+    items: Vec<DeliveryItem>,
+    next_cursor: Option<String>,
 }
 
-pub async fn register_webhook(
+async fn create_webhook(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-    Json(payload): Json<RegisterWebhookRequest>,
-) -> ApiResult<Json<RegisterWebhookResponse>> {
-    let subscriber_id = require_subscriber(&auth)?;
+    Extension(request_id): Extension<RequestId>,
+    Json(payload): Json<CreateWebhookRequest>,
+) -> ApiResult<Json<CreateWebhookResponse>> {
+    let subscriber_id = require_subscriber(&auth, &request_id)?;
 
-    validate_url(&payload.url, &state.herald_env)?;
-
-    if payload.name.trim().is_empty() {
-        return Err(ApiError::BadRequest("name required".to_string()));
-    }
+    validate_webhook_url(&payload.url, &state.settings.herald_env)
+        .map_err(|msg| AppError::BadRequest(msg).with_request_id(&request_id.0))?;
 
     let id = format!("wh_{}", nanoid::nanoid!(12));
-
-    let record = sqlx::query_as::<_, RegisterWebhookResponse>(
-        r#"
-        INSERT INTO webhooks (id, subscriber_id, url, name, token)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id, status::text as status
-        "#,
+    let webhook = db::queries::webhooks::create(
+        &state.db,
+        &id,
+        subscriber_id,
+        &payload.url,
+        &payload.name,
+        payload.token.as_deref(),
     )
-    .bind(&id)
-    .bind(subscriber_id)
-    .bind(&payload.url)
-    .bind(&payload.name)
-    .bind(payload.token)
-    .fetch_one(&state.db)
-    .await?;
+    .await
+    .map_err(|_| AppError::Internal.with_request_id(&request_id.0))?;
 
-    Ok(Json(record))
+    Ok(Json(CreateWebhookResponse {
+        id: webhook.id,
+        status: webhook.status,
+    }))
 }
 
-pub async fn list_webhooks(
+async fn list_webhooks(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-) -> ApiResult<Json<WebhookListResponse>> {
-    let subscriber_id = require_subscriber(&auth)?;
+    Extension(request_id): Extension<RequestId>,
+) -> ApiResult<Json<ListWebhooksResponse>> {
+    let subscriber_id = require_subscriber(&auth, &request_id)?;
 
-    let items = sqlx::query_as::<_, WebhookRow>(
-        r#"
-        SELECT id, subscriber_id, name, url, status::text as status, created_at
-        FROM webhooks
-        WHERE subscriber_id = $1
-        ORDER BY created_at DESC
-        "#,
-    )
-    .bind(subscriber_id)
-    .fetch_all(&state.db)
-    .await?;
+    let hooks = db::queries::webhooks::list_by_subscriber(&state.db, subscriber_id)
+        .await
+        .map_err(|_| AppError::Internal.with_request_id(&request_id.0))?;
 
-    let items = items
-        .into_iter()
-        .map(|row| WebhookListItem {
-            id: row.id,
-            name: row.name,
-            url: row.url,
-            status: row.status,
-            created_at: row.created_at,
-        })
-        .collect();
-
-    Ok(Json(WebhookListResponse { items }))
+    Ok(Json(ListWebhooksResponse {
+        items: hooks
+            .into_iter()
+            .map(|hook| WebhookItem {
+                id: hook.id,
+                name: hook.name,
+                url: hook.url,
+                status: hook.status,
+            })
+            .collect(),
+    }))
 }
 
-pub async fn update_webhook(
+async fn update_webhook(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    Extension(request_id): Extension<RequestId>,
     Path(id): Path<String>,
     Json(payload): Json<UpdateWebhookRequest>,
 ) -> ApiResult<Json<UpdateWebhookResponse>> {
-    let subscriber_id = require_subscriber(&auth)?;
+    let subscriber_id = require_subscriber(&auth, &request_id)?;
 
-    let existing = sqlx::query_as::<_, WebhookRow>(
-        r#"
-        SELECT id, subscriber_id, name, url, status::text as status, created_at
-        FROM webhooks
-        WHERE id = $1
-        "#,
-    )
-    .bind(&id)
-    .fetch_optional(&state.db)
-    .await?;
+    let webhook = db::queries::webhooks::get_by_id(&state.db, &id)
+        .await
+        .map_err(|_| AppError::Internal.with_request_id(&request_id.0))?
+        .ok_or_else(|| {
+            AppError::NotFound("webhook not found".to_string()).with_request_id(&request_id.0)
+        })?;
 
-    let existing = match existing {
-        Some(existing) => existing,
-        None => return Err(ApiError::NotFound("webhook not found".to_string())),
-    };
-
-    if existing.subscriber_id != subscriber_id {
-        return Err(ApiError::Forbidden("not webhook owner".to_string()));
+    if webhook.subscriber_id != subscriber_id {
+        return Err(
+            AppError::Forbidden("not webhook owner".to_string()).with_request_id(&request_id.0)
+        );
     }
 
     if let Some(url) = payload.url.as_deref() {
-        validate_url(url, &state.herald_env)?;
+        validate_webhook_url(url, &state.settings.herald_env)
+            .map_err(|msg| AppError::BadRequest(msg).with_request_id(&request_id.0))?;
     }
 
-    let mut qb = QueryBuilder::new("UPDATE webhooks SET ");
-    let mut set = qb.separated(", ");
-    let mut updated = false;
-
-    if let Some(name) = payload.name {
-        set.push("name = ").push_bind(name);
-        updated = true;
-    }
-    if let Some(url) = payload.url {
-        set.push("url = ").push_bind(url);
-        updated = true;
-    }
-    if let Some(token) = payload.token {
-        set.push("token = ").push_bind(token);
-        updated = true;
-    }
-    if let Some(status) = payload.status {
-        set.push("status = ").push_bind(status).push("::webhook_status");
-        updated = true;
-    }
-
-    if !updated {
-        return Err(ApiError::BadRequest("no fields to update".to_string()));
-    }
-
-    set.push("updated_at = now()");
-    qb.push(" WHERE id = ").push_bind(&id);
-    qb.push(" RETURNING id, status::text as status, updated_at");
-
-    let record = qb
-        .build_query_as::<UpdateWebhookRow>()
-        .fetch_one(&state.db)
-        .await?;
+    let (id, status, updated_at) = db::queries::webhooks::update(
+        &state.db,
+        &id,
+        payload.name.as_deref(),
+        payload.url.as_deref(),
+        None,
+    )
+    .await
+    .map_err(|err| {
+        if matches!(err, sqlx::Error::Protocol(_)) {
+            AppError::BadRequest("no fields to update".to_string()).with_request_id(&request_id.0)
+        } else {
+            AppError::Internal.with_request_id(&request_id.0)
+        }
+    })?;
 
     Ok(Json(UpdateWebhookResponse {
-        id: record.id,
-        status: record.status,
-        updated_at: record.updated_at,
+        id,
+        status,
+        updated_at,
     }))
 }
 
-pub async fn delete_webhook(
+async fn delete_webhook(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    Extension(request_id): Extension<RequestId>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<DeleteWebhookResponse>> {
-    let subscriber_id = require_subscriber(&auth)?;
+    let subscriber_id = require_subscriber(&auth, &request_id)?;
 
-    let existing = sqlx::query_as::<_, WebhookRow>(
-        r#"
-        SELECT id, subscriber_id, name, url, status::text as status, created_at
-        FROM webhooks
-        WHERE id = $1
-        "#,
-    )
-    .bind(&id)
-    .fetch_optional(&state.db)
-    .await?;
+    let webhook = db::queries::webhooks::get_by_id(&state.db, &id)
+        .await
+        .map_err(|_| AppError::Internal.with_request_id(&request_id.0))?
+        .ok_or_else(|| {
+            AppError::NotFound("webhook not found".to_string()).with_request_id(&request_id.0)
+        })?;
 
-    let existing = match existing {
-        Some(existing) => existing,
-        None => return Err(ApiError::NotFound("webhook not found".to_string())),
-    };
-
-    if existing.subscriber_id != subscriber_id {
-        return Err(ApiError::Forbidden("not webhook owner".to_string()));
+    if webhook.subscriber_id != subscriber_id {
+        return Err(
+            AppError::Forbidden("not webhook owner".to_string()).with_request_id(&request_id.0)
+        );
     }
 
-    sqlx::query(
-        r#"
-        UPDATE webhooks
-        SET status = 'disabled', updated_at = now()
-        WHERE id = $1
-        "#,
-    )
-    .bind(&id)
-    .execute(&state.db)
-    .await?;
+    let (id, status, _updated_at) =
+        db::queries::webhooks::update(&state.db, &id, None, None, Some(WebhookStatus::Disabled))
+            .await
+            .map_err(|_| AppError::Internal.with_request_id(&request_id.0))?;
 
-    Ok(Json(DeleteWebhookResponse {
-        id,
-        status: "disabled".to_string(),
+    Ok(Json(DeleteWebhookResponse { id, status }))
+}
+
+async fn list_deliveries(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(request_id): Extension<RequestId>,
+    Path(id): Path<String>,
+    Query(query): Query<ListDeliveriesQuery>,
+) -> ApiResult<Json<ListDeliveriesResponse>> {
+    let subscriber_id = require_subscriber(&auth, &request_id)?;
+
+    let webhook = db::queries::webhooks::get_by_id(&state.db, &id)
+        .await
+        .map_err(|_| AppError::Internal.with_request_id(&request_id.0))?
+        .ok_or_else(|| {
+            AppError::NotFound("webhook not found".to_string()).with_request_id(&request_id.0)
+        })?;
+
+    if webhook.subscriber_id != subscriber_id {
+        return Err(
+            AppError::Forbidden("not webhook owner".to_string()).with_request_id(&request_id.0)
+        );
+    }
+
+    let limit = query.limit.unwrap_or(50).min(100);
+    let deliveries =
+        db::queries::deliveries::list_by_webhook(&state.db, &id, limit, query.cursor.as_deref())
+            .await
+            .map_err(|_| AppError::Internal.with_request_id(&request_id.0))?;
+
+    let next_cursor = deliveries.last().map(|delivery| delivery.id.clone());
+
+    Ok(Json(ListDeliveriesResponse {
+        items: deliveries
+            .into_iter()
+            .map(|delivery| DeliveryItem {
+                id: delivery.id,
+                status: delivery.status,
+                attempt: delivery.attempt,
+                status_code: delivery.status_code,
+                latency_ms: delivery.latency_ms,
+            })
+            .collect(),
+        next_cursor,
     }))
 }
 
-fn require_subscriber(auth: &AuthContext) -> ApiResult<&str> {
+fn require_subscriber<'a>(
+    auth: &'a AuthContext,
+    request_id: &RequestId,
+) -> Result<&'a str, ApiError> {
     match auth.owner_type {
-        OwnerType::Subscriber => Ok(auth.owner_id.as_str()),
-        OwnerType::Publisher => Err(ApiError::Forbidden("subscriber access required".to_string())),
+        ApiKeyOwner::Subscriber => Ok(auth.owner_id.as_str()),
+        ApiKeyOwner::Publisher => Err(AppError::Forbidden(
+            "subscriber access required".to_string(),
+        )
+        .with_request_id(&request_id.0)),
     }
 }
 
-fn validate_url(url: &str, env: &str) -> ApiResult<()> {
-    let url = url.trim();
-    if !(url.starts_with("https://") || url.starts_with("http://")) {
-        return Err(ApiError::BadRequest("url must start with http:// or https://".to_string()));
+fn validate_webhook_url(url: &str, env: &str) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Err("webhook url must be https".to_string());
     }
-    if env == "production" && (url.contains("localhost") || url.contains("127.0.0.1")) {
-        return Err(ApiError::BadRequest("url cannot target localhost in production".to_string()));
+
+    if env == "prod" {
+        let lowered = url.to_lowercase();
+        if lowered.contains("localhost")
+            || lowered.contains("127.0.0.1")
+            || lowered.contains("0.0.0.0")
+        {
+            return Err("webhook url must not target localhost in prod".to_string());
+        }
     }
+
     Ok(())
 }

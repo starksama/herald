@@ -5,22 +5,24 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::QueryBuilder;
 
 use crate::{
-    error::{ApiError, ApiResult},
-    middleware::auth::{AuthContext, OwnerType},
-    state::AppState,
+    error::{ApiError, ApiResult, AppError},
+    middleware::auth::AuthContext,
+    state::{AppState, RequestId},
 };
+use db::models::{ChannelStatus, PricingTier};
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/channels", post(create_channel).get(list_channels))
         .route(
-            "/v1/channels/{id}",
-            get(get_channel).patch(update_channel).delete(delete_channel),
+            "/v1/channels/:id",
+            get(get_channel)
+                .patch(update_channel)
+                .delete(delete_channel),
         )
-        .route("/v1/channels/{id}/stats", get(channel_stats))
+        .route("/v1/channels/:id/stats", get(channel_stats))
         .with_state(state)
 }
 
@@ -31,9 +33,21 @@ struct CreateChannelRequest {
     display_name: String,
     description: Option<String>,
     category: Option<String>,
-    pricing_tier: Option<String>,
+    pricing_tier: Option<PricingTier>,
     price_cents: Option<i32>,
     is_public: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateChannelRequest {
+    display_name: Option<String>,
+    description: Option<String>,
+    category: Option<String>,
+    pricing_tier: Option<PricingTier>,
+    price_cents: Option<i32>,
+    is_public: Option<bool>,
+    status: Option<ChannelStatus>,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,7 +56,7 @@ struct ChannelSummaryResponse {
     id: String,
     slug: String,
     display_name: String,
-    pricing_tier: String,
+    pricing_tier: PricingTier,
     price_cents: i32,
     subscriber_count: i32,
     signal_count: i32,
@@ -56,9 +70,9 @@ struct ChannelDetailResponse {
     display_name: String,
     description: Option<String>,
     category: Option<String>,
-    pricing_tier: String,
+    pricing_tier: PricingTier,
     price_cents: i32,
-    status: String,
+    status: ChannelStatus,
     is_public: bool,
 }
 
@@ -74,7 +88,7 @@ struct UpdateChannelResponse {
 #[serde(rename_all = "camelCase")]
 struct DeleteChannelResponse {
     id: String,
-    status: String,
+    status: ChannelStatus,
 }
 
 #[derive(Debug, Serialize)]
@@ -83,13 +97,13 @@ struct ChannelListResponse {
     items: Vec<ChannelListItem>,
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ChannelListItem {
     id: String,
     slug: String,
     display_name: String,
-    pricing_tier: String,
+    pricing_tier: PricingTier,
     price_cents: i32,
 }
 
@@ -101,152 +115,103 @@ struct ChannelStatsResponse {
     delivery_success_rate: f64,
 }
 
-#[derive(Debug, sqlx::FromRow)]
-struct ChannelRow {
-    id: String,
-    publisher_id: String,
-    slug: String,
-    display_name: String,
-    description: Option<String>,
-    category: Option<String>,
-    pricing_tier: String,
-    price_cents: i32,
-    status: String,
-    is_public: bool,
-    signal_count: i32,
-    subscriber_count: i32,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct UpdateChannelRequest {
-    display_name: Option<String>,
-    description: Option<String>,
-    category: Option<String>,
-    pricing_tier: Option<String>,
-    price_cents: Option<i32>,
-    is_public: Option<bool>,
-    status: Option<String>,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct ChannelStatsRow {
-    signal_count: i32,
-    subscriber_count: i32,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct DeliveryTotalsRow {
-    delivered: i64,
-    total: i64,
-}
-
-pub async fn create_channel(
+async fn create_channel(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    Extension(request_id): Extension<RequestId>,
     Json(payload): Json<CreateChannelRequest>,
 ) -> ApiResult<Json<ChannelSummaryResponse>> {
-    let publisher_id = require_publisher(&auth)?;
+    let publisher_id = require_publisher(&auth, &request_id)?;
 
     if payload.slug.trim().is_empty() || payload.display_name.trim().is_empty() {
-        return Err(ApiError::BadRequest("slug and displayName required".to_string()));
+        return Err(
+            AppError::BadRequest("slug and displayName required".to_string())
+                .with_request_id(&request_id.0),
+        );
     }
 
-    let pricing_tier = payload.pricing_tier.unwrap_or_else(|| "free".to_string());
+    let pricing_tier = payload.pricing_tier.unwrap_or(PricingTier::Free);
     let price_cents = payload.price_cents.unwrap_or(0);
     let is_public = payload.is_public.unwrap_or(true);
     let id = format!("ch_{}", nanoid::nanoid!(12));
 
-    let record = sqlx::query_as::<_, ChannelRow>(
-        r#"
-        INSERT INTO channels (id, publisher_id, slug, display_name, description, category, pricing_tier, price_cents, is_public)
-        VALUES ($1, $2, $3, $4, $5, $6, $7::pricing_tier, $8, $9)
-        RETURNING id, publisher_id, slug, display_name, description, category,
-                  pricing_tier::text as pricing_tier, price_cents, status::text as status,
-                  is_public, signal_count, subscriber_count
-        "#,
+    let channel = db::queries::channels::create(
+        &state.db,
+        &id,
+        publisher_id,
+        &payload.slug,
+        &payload.display_name,
+        payload.description.as_deref(),
+        payload.category.as_deref(),
+        pricing_tier,
+        price_cents,
+        is_public,
     )
-    .bind(&id)
-    .bind(publisher_id)
-    .bind(&payload.slug)
-    .bind(&payload.display_name)
-    .bind(payload.description)
-    .bind(payload.category)
-    .bind(&pricing_tier)
-    .bind(price_cents)
-    .bind(is_public)
-    .fetch_one(&state.db)
-    .await?;
+    .await
+    .map_err(|_| AppError::Internal.with_request_id(&request_id.0))?;
 
     Ok(Json(ChannelSummaryResponse {
-        id: record.id,
-        slug: record.slug,
-        display_name: record.display_name,
-        pricing_tier: record.pricing_tier,
-        price_cents: record.price_cents,
-        subscriber_count: record.subscriber_count,
-        signal_count: record.signal_count,
+        id: channel.id,
+        slug: channel.slug,
+        display_name: channel.display_name,
+        pricing_tier: channel.pricing_tier,
+        price_cents: channel.price_cents,
+        subscriber_count: channel.subscriber_count,
+        signal_count: channel.signal_count,
     }))
 }
 
-pub async fn list_channels(
+async fn list_channels(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    Extension(request_id): Extension<RequestId>,
 ) -> ApiResult<Json<ChannelListResponse>> {
-    match auth.owner_type {
-        OwnerType::Subscriber => {}
-        OwnerType::Publisher => {
-            return Err(ApiError::Forbidden(
-                "publishers cannot list marketplace channels".to_string(),
-            ));
-        }
-    }
+    require_subscriber(&auth, &request_id)?;
 
-    let channels = sqlx::query_as::<_, ChannelListItem>(
-        r#"
-        SELECT id, slug, display_name, pricing_tier::text as pricing_tier, price_cents
-        FROM channels
-        WHERE is_public = true AND status = 'active'
-        ORDER BY created_at DESC
-        "#,
-    )
-    .fetch_all(&state.db)
-    .await?;
+    let channels = db::queries::channels::list_marketplace(&state.db)
+        .await
+        .map_err(|_| AppError::Internal.with_request_id(&request_id.0))?;
 
-    Ok(Json(ChannelListResponse { items: channels }))
+    Ok(Json(ChannelListResponse {
+        items: channels
+            .into_iter()
+            .map(|channel| ChannelListItem {
+                id: channel.id,
+                slug: channel.slug,
+                display_name: channel.display_name,
+                pricing_tier: channel.pricing_tier,
+                price_cents: channel.price_cents,
+            })
+            .collect(),
+    }))
 }
 
-pub async fn get_channel(
+async fn get_channel(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    Extension(request_id): Extension<RequestId>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<ChannelDetailResponse>> {
-    let channel = sqlx::query_as::<_, ChannelRow>(
-        r#"
-        SELECT id, publisher_id, slug, display_name, description, category,
-               pricing_tier::text as pricing_tier, price_cents,
-               status::text as status, is_public, signal_count, subscriber_count
-        FROM channels
-        WHERE id = $1
-        "#,
-    )
-    .bind(&id)
-    .fetch_optional(&state.db)
-    .await?;
+    let channel = db::queries::channels::get_by_id(&state.db, &id)
+        .await
+        .map_err(|_| AppError::Internal.with_request_id(&request_id.0))?
+        .ok_or_else(|| {
+            AppError::NotFound("channel not found".to_string()).with_request_id(&request_id.0)
+        })?;
 
-    let channel = match channel {
-        Some(channel) => channel,
-        None => return Err(ApiError::NotFound("channel not found".to_string())),
-    };
-
-    if channel.status == "deleted" {
-        return Err(ApiError::NotFound("channel not found".to_string()));
+    if matches!(channel.status, ChannelStatus::Deleted) {
+        return Err(
+            AppError::NotFound("channel not found".to_string()).with_request_id(&request_id.0)
+        );
     }
 
-    if !channel.is_public {
-        if auth.owner_type != OwnerType::Publisher || channel.publisher_id != auth.owner_id {
-            return Err(ApiError::NotFound("channel not found".to_string()));
-        }
+    if !channel.is_public
+        && (auth.owner_type != db::models::ApiKeyOwner::Publisher
+            || channel.publisher_id != auth.owner_id)
+    {
+        return Err(
+            AppError::NotFound("channel not found".to_string()).with_request_id(&request_id.0)
+        );
     }
 
     Ok(Json(ChannelDetailResponse {
@@ -262,176 +227,108 @@ pub async fn get_channel(
     }))
 }
 
-pub async fn update_channel(
+async fn update_channel(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    Extension(request_id): Extension<RequestId>,
     Path(id): Path<String>,
     Json(payload): Json<UpdateChannelRequest>,
 ) -> ApiResult<Json<UpdateChannelResponse>> {
-    let publisher_id = require_publisher(&auth)?;
+    let publisher_id = require_publisher(&auth, &request_id)?;
 
-    let channel = sqlx::query_as::<_, ChannelRow>(
-        r#"
-        SELECT id, publisher_id, slug, display_name, description, category,
-               pricing_tier::text as pricing_tier, price_cents,
-               status::text as status, is_public, signal_count, subscriber_count
-        FROM channels
-        WHERE id = $1
-        "#,
-    )
-    .bind(&id)
-    .fetch_optional(&state.db)
-    .await?;
-
-    let channel = match channel {
-        Some(channel) => channel,
-        None => return Err(ApiError::NotFound("channel not found".to_string())),
-    };
+    let channel = db::queries::channels::get_by_id(&state.db, &id)
+        .await
+        .map_err(|_| AppError::Internal.with_request_id(&request_id.0))?
+        .ok_or_else(|| {
+            AppError::NotFound("channel not found".to_string()).with_request_id(&request_id.0)
+        })?;
 
     if channel.publisher_id != publisher_id {
-        return Err(ApiError::Forbidden("not channel owner".to_string()));
+        return Err(
+            AppError::Forbidden("not channel owner".to_string()).with_request_id(&request_id.0)
+        );
     }
 
-    let mut qb = QueryBuilder::new("UPDATE channels SET ");
-    let mut set = qb.separated(", ");
-    let mut updated = false;
-
-    if let Some(display_name) = payload.display_name {
-        set.push("display_name = ").push_bind(display_name);
-        updated = true;
-    }
-    if let Some(description) = payload.description {
-        set.push("description = ").push_bind(description);
-        updated = true;
-    }
-    if let Some(category) = payload.category {
-        set.push("category = ").push_bind(category);
-        updated = true;
-    }
-    if let Some(pricing_tier) = payload.pricing_tier {
-        set.push("pricing_tier = ")
-            .push_bind(pricing_tier)
-            .push("::pricing_tier");
-        updated = true;
-    }
-    if let Some(price_cents) = payload.price_cents {
-        set.push("price_cents = ").push_bind(price_cents);
-        updated = true;
-    }
-    if let Some(is_public) = payload.is_public {
-        set.push("is_public = ").push_bind(is_public);
-        updated = true;
-    }
-    if let Some(status) = payload.status {
-        set.push("status = ")
-            .push_bind(status)
-            .push("::channel_status");
-        updated = true;
-    }
-
-    if !updated {
-        return Err(ApiError::BadRequest("no fields to update".to_string()));
-    }
-
-    set.push("updated_at = now()");
-    qb.push(" WHERE id = ").push_bind(&id);
-    qb.push(" RETURNING id, display_name, updated_at");
-
-    let record = qb
-        .build_query_as::<UpdateChannelRow>()
-        .fetch_one(&state.db)
-        .await?;
+    let (id, display_name, updated_at) = db::queries::channels::update(
+        &state.db,
+        &id,
+        payload.display_name.as_deref(),
+        payload.description.as_deref(),
+        payload.category.as_deref(),
+        payload.pricing_tier,
+        payload.price_cents,
+        payload.is_public,
+        payload.status,
+    )
+    .await
+    .map_err(|err| {
+        if matches!(err, sqlx::Error::Protocol(_)) {
+            AppError::BadRequest("no fields to update".to_string()).with_request_id(&request_id.0)
+        } else {
+            AppError::Internal.with_request_id(&request_id.0)
+        }
+    })?;
 
     Ok(Json(UpdateChannelResponse {
-        id: record.id,
-        display_name: record.display_name,
-        updated_at: record.updated_at,
+        id,
+        display_name,
+        updated_at,
     }))
 }
 
-pub async fn delete_channel(
+async fn delete_channel(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    Extension(request_id): Extension<RequestId>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<DeleteChannelResponse>> {
-    let publisher_id = require_publisher(&auth)?;
+    let publisher_id = require_publisher(&auth, &request_id)?;
 
-    let record = sqlx::query_as::<_, ChannelOwnerRow>(
-        r#"
-        SELECT id, publisher_id
-        FROM channels
-        WHERE id = $1
-        "#,
-    )
-    .bind(&id)
-    .fetch_optional(&state.db)
-    .await?;
+    let channel = db::queries::channels::get_by_id(&state.db, &id)
+        .await
+        .map_err(|_| AppError::Internal.with_request_id(&request_id.0))?
+        .ok_or_else(|| {
+            AppError::NotFound("channel not found".to_string()).with_request_id(&request_id.0)
+        })?;
 
-    let record = match record {
-        Some(record) => record,
-        None => return Err(ApiError::NotFound("channel not found".to_string())),
-    };
-
-    if record.publisher_id != publisher_id {
-        return Err(ApiError::Forbidden("not channel owner".to_string()));
+    if channel.publisher_id != publisher_id {
+        return Err(
+            AppError::Forbidden("not channel owner".to_string()).with_request_id(&request_id.0)
+        );
     }
 
-    sqlx::query(
-        r#"
-        UPDATE channels
-        SET status = 'deleted', is_public = false, updated_at = now()
-        WHERE id = $1
-        "#,
-    )
-    .bind(&id)
-    .execute(&state.db)
-    .await?;
+    db::queries::channels::soft_delete(&state.db, &id)
+        .await
+        .map_err(|_| AppError::Internal.with_request_id(&request_id.0))?;
 
     Ok(Json(DeleteChannelResponse {
         id,
-        status: "deleted".to_string(),
+        status: ChannelStatus::Deleted,
     }))
 }
 
-pub async fn channel_stats(
+async fn channel_stats(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    Extension(request_id): Extension<RequestId>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<ChannelStatsResponse>> {
-    let channel = sqlx::query_as::<_, ChannelRow>(
-        r#"
-        SELECT id, publisher_id, slug, display_name, description, category,
-               pricing_tier::text as pricing_tier, price_cents,
-               status::text as status, is_public, signal_count, subscriber_count
-        FROM channels
-        WHERE id = $1
-        "#,
-    )
-    .bind(&id)
-    .fetch_optional(&state.db)
-    .await?;
+    let publisher_id = require_publisher(&auth, &request_id)?;
 
-    let channel = match channel {
-        Some(channel) => channel,
-        None => return Err(ApiError::NotFound("channel not found".to_string())),
-    };
+    let channel = db::queries::channels::get_by_id(&state.db, &id)
+        .await
+        .map_err(|_| AppError::Internal.with_request_id(&request_id.0))?
+        .ok_or_else(|| {
+            AppError::NotFound("channel not found".to_string()).with_request_id(&request_id.0)
+        })?;
 
-    if auth.owner_type != OwnerType::Publisher || channel.publisher_id != auth.owner_id {
-        return Err(ApiError::Forbidden("not channel owner".to_string()));
+    if channel.publisher_id != publisher_id {
+        return Err(
+            AppError::Forbidden("not channel owner".to_string()).with_request_id(&request_id.0)
+        );
     }
 
-    let stats = sqlx::query_as::<_, ChannelStatsRow>(
-        r#"
-        SELECT signal_count, subscriber_count
-        FROM channels
-        WHERE id = $1
-        "#,
-    )
-    .bind(&id)
-    .fetch_one(&state.db)
-    .await?;
-
-    let totals = sqlx::query_as::<_, DeliveryTotalsRow>(
+    let totals = sqlx::query_as::<_, (i64, i64)>(
         r#"
         SELECT COALESCE(SUM(delivered_count), 0) as delivered,
                COALESCE(SUM(delivery_count), 0) as total
@@ -441,37 +338,44 @@ pub async fn channel_stats(
     )
     .bind(&id)
     .fetch_one(&state.db)
-    .await?;
+    .await
+    .map_err(|_| AppError::Internal.with_request_id(&request_id.0))?;
 
-    let delivery_success_rate = if totals.total > 0 {
-        totals.delivered as f64 / totals.total as f64
+    let delivery_success_rate = if totals.1 > 0 {
+        totals.0 as f64 / totals.1 as f64
     } else {
         0.0
     };
 
     Ok(Json(ChannelStatsResponse {
-        signal_count: stats.signal_count,
-        subscriber_count: stats.subscriber_count,
+        signal_count: channel.signal_count,
+        subscriber_count: channel.subscriber_count,
         delivery_success_rate,
     }))
 }
 
-fn require_publisher(auth: &AuthContext) -> ApiResult<&str> {
+fn require_publisher<'a>(
+    auth: &'a AuthContext,
+    request_id: &RequestId,
+) -> Result<&'a str, ApiError> {
     match auth.owner_type {
-        OwnerType::Publisher => Ok(auth.owner_id.as_str()),
-        OwnerType::Subscriber => Err(ApiError::Forbidden("publisher access required".to_string())),
+        db::models::ApiKeyOwner::Publisher => Ok(auth.owner_id.as_str()),
+        db::models::ApiKeyOwner::Subscriber => {
+            Err(AppError::Forbidden("publisher access required".to_string())
+                .with_request_id(&request_id.0))
+        }
     }
 }
 
-#[derive(Debug, sqlx::FromRow)]
-struct UpdateChannelRow {
-    id: String,
-    display_name: String,
-    updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct ChannelOwnerRow {
-    id: String,
-    publisher_id: String,
+fn require_subscriber<'a>(
+    auth: &'a AuthContext,
+    request_id: &RequestId,
+) -> Result<&'a str, ApiError> {
+    match auth.owner_type {
+        db::models::ApiKeyOwner::Subscriber => Ok(auth.owner_id.as_str()),
+        db::models::ApiKeyOwner::Publisher => Err(AppError::Forbidden(
+            "subscriber access required".to_string(),
+        )
+        .with_request_id(&request_id.0)),
+    }
 }

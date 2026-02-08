@@ -17,4 +17,8 @@ redis = { workspace = true }
 chrono = { workspace = true }
 nanoid = { workspace = true }
 sha2 = { workspace = true }
+apalis = { workspace = true }
+core = { path = "../core" }
+db = { path = "../db" }
+once_cell = { workspace = true }
 dotenvy = "0.15"

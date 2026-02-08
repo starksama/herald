@@ -1,12 +1,24 @@
 use axum::{routing::get, Json, Router};
-use serde_json::json;
+use serde::Serialize;
 
-use crate::state::AppState;
+use crate::state::{AppState, METRICS};
 
-pub fn router(_state: AppState) -> Router {
-    Router::new().route("/health", get(health))
+#[derive(Serialize)]
+struct HealthResponse {
+    status: &'static str,
 }
 
-async fn health() -> Json<serde_json::Value> {
-    Json(json!({"status": "ok"}))
+pub fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/metrics", get(metrics))
+        .with_state(state)
+}
+
+async fn health() -> Json<HealthResponse> {
+    Json(HealthResponse { status: "ok" })
+}
+
+async fn metrics() -> String {
+    METRICS.gather()
 }

@@ -17,10 +17,10 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/channels", post(create_channel).get(list_channels))
         .route(
-            "/v1/channels/:id",
+            "/v1/channels/{id}",
             get(get_channel).patch(update_channel).delete(delete_channel),
         )
-        .route("/v1/channels/:id/stats", get(channel_stats))
+        .route("/v1/channels/{id}/stats", get(channel_stats))
         .with_state(state)
 }
 

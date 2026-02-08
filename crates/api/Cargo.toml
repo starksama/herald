@@ -17,3 +17,4 @@ redis = { workspace = true }
 chrono = { workspace = true }
 nanoid = { workspace = true }
 sha2 = { workspace = true }
+dotenvy = "0.15"

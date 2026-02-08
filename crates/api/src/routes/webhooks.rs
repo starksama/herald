@@ -16,7 +16,7 @@ use crate::{
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/webhooks", post(register_webhook).get(list_webhooks))
-        .route("/v1/webhooks/:id", patch(update_webhook).delete(delete_webhook))
+        .route("/v1/webhooks/{id}", patch(update_webhook).delete(delete_webhook))
         .with_state(state)
 }
 

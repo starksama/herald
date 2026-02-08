@@ -39,6 +39,7 @@ dependencies = [
  "anyhow",
  "axum",
  "chrono",
+ "dotenvy",
  "nanoid",
  "redis",
  "serde",

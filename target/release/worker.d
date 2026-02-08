@@ -1,0 +1,1 @@
+/Users/anton/projects/herald/target/release/worker: /Users/anton/projects/herald/crates/core/src/lib.rs /Users/anton/projects/herald/crates/db/src/lib.rs /Users/anton/projects/herald/crates/worker/src/main.rs

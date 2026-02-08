@@ -15,7 +15,7 @@ use crate::{
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/subscriptions", post(subscribe).get(list_subscriptions))
-        .route("/v1/subscriptions/:id", delete(unsubscribe))
+        .route("/v1/subscriptions/{id}", delete(unsubscribe))
         .with_state(state)
 }
 

@@ -15,7 +15,7 @@ use crate::{
 
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route("/v1/channels/:id/signals", post(push_signal).get(list_signals))
+        .route("/v1/channels/{id}/signals", post(push_signal).get(list_signals))
         .with_state(state)
 }
 

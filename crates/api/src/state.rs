@@ -7,6 +7,8 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::MutexGuard;
+use tracing::warn;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -40,8 +42,18 @@ impl Metrics {
         }
     }
 
+    fn lock_store(&self) -> MutexGuard<'_, MetricsStore> {
+        match self.store.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                warn!("metrics store lock poisoned; continuing with inner state");
+                poisoned.into_inner()
+            }
+        }
+    }
+
     pub fn record_http_request(&self, method: &str, path: &str, status: u16) {
-        let mut store = self.store.lock().unwrap();
+        let mut store = self.lock_store();
         *store
             .http_requests
             .entry((method.to_string(), path.to_string(), status))
@@ -49,7 +61,7 @@ impl Metrics {
     }
 
     pub fn record_signal(&self, channel: &str, urgency: &str) {
-        let mut store = self.store.lock().unwrap();
+        let mut store = self.lock_store();
         *store
             .signals
             .entry((channel.to_string(), urgency.to_string()))
@@ -58,13 +70,13 @@ impl Metrics {
 
     #[allow(dead_code)]
     pub fn record_delivery(&self, status: &str) {
-        let mut store = self.store.lock().unwrap();
+        let mut store = self.lock_store();
         *store.deliveries.entry(status.to_string()).or_insert(0) += 1;
     }
 
     #[allow(dead_code)]
     pub fn record_delivery_latency(&self, channel: &str, seconds: f64) {
-        let mut store = self.store.lock().unwrap();
+        let mut store = self.lock_store();
         let entry = store.latency.entry(channel.to_string()).or_insert((0, 0.0));
         entry.0 += 1;
         entry.1 += seconds;
@@ -72,12 +84,12 @@ impl Metrics {
 
     #[allow(dead_code)]
     pub fn set_queue_depth(&self, queue: &str, depth: i64) {
-        let mut store = self.store.lock().unwrap();
+        let mut store = self.lock_store();
         store.queue_depth.insert(queue.to_string(), depth);
     }
 
     pub fn gather(&self) -> String {
-        let store = self.store.lock().unwrap();
+        let store = self.lock_store();
         let mut out = String::new();
 
         out.push_str("# TYPE herald_http_requests_total counter\n");

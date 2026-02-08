@@ -1,9 +1,11 @@
 use apalis::postgres::PostgresStorage;
 use core::config::Settings;
 use core::types::DeliveryJob;
+use core::tunnel::AgentRegistry;
 use once_cell::sync::Lazy;
 use sqlx::PgPool;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::Mutex;
 
 #[derive(Clone)]
@@ -12,6 +14,7 @@ pub struct AppState {
     pub redis: redis::Client,
     pub storage: PostgresStorage<DeliveryJob>,
     pub settings: Settings,
+    pub tunnel_registry: Arc<AgentRegistry>,
 }
 
 #[derive(Debug, Clone)]

@@ -1,7 +1,9 @@
 use anyhow::Result;
 use core::config::Settings;
 use core::types::DeliveryJob;
+use core::tunnel::AgentRegistry;
 use sqlx::postgres::PgPoolOptions;
+use std::sync::Arc;
 use tracing::info;
 
 mod jobs;
@@ -11,6 +13,7 @@ pub struct WorkerState {
     pub db: sqlx::PgPool,
     pub client: reqwest::Client,
     pub storage: apalis::postgres::PostgresStorage<DeliveryJob>,
+    pub tunnel_registry: Arc<AgentRegistry>,
 }
 
 #[tokio::main]
@@ -39,6 +42,7 @@ async fn main() -> Result<()> {
         db,
         client,
         storage,
+        tunnel_registry: core::tunnel::AGENT_REGISTRY.clone(),
     };
 
     let handler_state = state.clone();

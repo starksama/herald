@@ -75,6 +75,13 @@ pub enum DeliveryStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+pub enum DeliveryMode {
+    Agent,
+    Webhook,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
 pub enum ApiKeyOwner {
     Publisher,
     Subscriber,
@@ -110,6 +117,8 @@ pub struct Subscriber {
     pub stripe_customer_id: Option<String>,
     pub tier: AccountTier,
     pub status: AccountStatus,
+    pub delivery_mode: DeliveryMode,
+    pub agent_last_connected_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -167,7 +176,7 @@ pub struct Subscription {
     pub id: String,
     pub subscriber_id: String,
     pub channel_id: String,
-    pub webhook_id: String,
+    pub webhook_id: Option<String>,
     pub status: SubscriptionStatus,
     pub stripe_subscription_id: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -179,7 +188,8 @@ pub struct Delivery {
     pub id: String,
     pub signal_id: String,
     pub subscription_id: String,
-    pub webhook_id: String,
+    pub webhook_id: Option<String>,
+    pub delivery_mode: DeliveryMode,
     pub attempt: i32,
     pub status: DeliveryStatus,
     pub status_code: Option<i32>,
@@ -220,6 +230,6 @@ pub struct DeadLetterEntry {
 pub struct DeliveryJob {
     pub signal_id: String,
     pub subscription_id: String,
-    pub webhook_id: String,
+    pub webhook_id: Option<String>,
     pub attempt: i32,
 }

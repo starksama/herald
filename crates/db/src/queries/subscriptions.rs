@@ -6,7 +6,7 @@ pub async fn create(
     id: &str,
     subscriber_id: &str,
     channel_id: &str,
-    webhook_id: &str,
+    webhook_id: Option<&str>,
 ) -> Result<Subscription, sqlx::Error> {
     sqlx::query_as::<_, Subscription>(
         r#"

@@ -27,7 +27,7 @@ pub fn router(state: AppState) -> Router {
 #[serde(rename_all = "camelCase")]
 struct CreateSubscriptionRequest {
     channel_id: String,
-    webhook_id: String,
+    webhook_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,7 +42,7 @@ struct CreateSubscriptionResponse {
 struct SubscriptionItem {
     id: String,
     channel_id: String,
-    webhook_id: String,
+    webhook_id: Option<String>,
     status: SubscriptionStatus,
 }
 
@@ -93,17 +93,19 @@ async fn create_subscription(
             .with_request_id(&request_id.0));
     }
 
-    let webhook = db::queries::webhooks::get_by_id(&state.db, &payload.webhook_id)
-        .await
-        .map_err(|_| AppError::Internal.with_request_id(&request_id.0))?
-        .ok_or_else(|| {
-            AppError::NotFound("webhook not found".to_string()).with_request_id(&request_id.0)
-        })?;
+    if let Some(webhook_id) = payload.webhook_id.as_deref() {
+        let webhook = db::queries::webhooks::get_by_id(&state.db, webhook_id)
+            .await
+            .map_err(|_| AppError::Internal.with_request_id(&request_id.0))?
+            .ok_or_else(|| {
+                AppError::NotFound("webhook not found".to_string()).with_request_id(&request_id.0)
+            })?;
 
-    if webhook.subscriber_id != subscriber_id {
-        return Err(
-            AppError::Forbidden("not webhook owner".to_string()).with_request_id(&request_id.0)
-        );
+        if webhook.subscriber_id != subscriber_id {
+            return Err(
+                AppError::Forbidden("not webhook owner".to_string()).with_request_id(&request_id.0)
+            );
+        }
     }
 
     let id = format!("sub_{}", nanoid::nanoid!(12));
@@ -112,7 +114,7 @@ async fn create_subscription(
         &id,
         subscriber_id,
         &payload.channel_id,
-        &payload.webhook_id,
+        payload.webhook_id.as_deref(),
     )
     .await
     .map_err(|err| {

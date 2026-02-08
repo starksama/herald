@@ -1,4 +1,4 @@
-use crate::models::{Delivery, DeliveryStatus};
+use crate::models::{Delivery, DeliveryMode, DeliveryStatus};
 use sqlx::PgPool;
 
 pub async fn create(
@@ -6,14 +6,15 @@ pub async fn create(
     id: &str,
     signal_id: &str,
     subscription_id: &str,
-    webhook_id: &str,
+    webhook_id: Option<&str>,
+    delivery_mode: DeliveryMode,
     attempt: i32,
 ) -> Result<Delivery, sqlx::Error> {
     sqlx::query_as::<_, Delivery>(
         r#"
-        INSERT INTO deliveries (id, signal_id, subscription_id, webhook_id, attempt)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id, signal_id, subscription_id, webhook_id, attempt,
+        INSERT INTO deliveries (id, signal_id, subscription_id, webhook_id, delivery_mode, attempt)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id, signal_id, subscription_id, webhook_id, delivery_mode, attempt,
                   status, status_code, error_message, latency_ms,
                   created_at, updated_at
         "#,
@@ -22,6 +23,7 @@ pub async fn create(
     .bind(signal_id)
     .bind(subscription_id)
     .bind(webhook_id)
+    .bind(delivery_mode)
     .bind(attempt)
     .fetch_one(pool)
     .await
@@ -65,7 +67,7 @@ pub async fn list_by_webhook(
     if let Some(cursor) = cursor {
         sqlx::query_as::<_, Delivery>(
             r#"
-            SELECT id, signal_id, subscription_id, webhook_id, attempt,
+            SELECT id, signal_id, subscription_id, webhook_id, delivery_mode, attempt,
                    status, status_code, error_message, latency_ms,
                    created_at, updated_at
             FROM deliveries
@@ -82,7 +84,7 @@ pub async fn list_by_webhook(
     } else {
         sqlx::query_as::<_, Delivery>(
             r#"
-            SELECT id, signal_id, subscription_id, webhook_id, attempt,
+            SELECT id, signal_id, subscription_id, webhook_id, delivery_mode, attempt,
                    status, status_code, error_message, latency_ms,
                    created_at, updated_at
             FROM deliveries
@@ -101,7 +103,7 @@ pub async fn list_by_webhook(
 pub async fn list_by_signal(pool: &PgPool, signal_id: &str) -> Result<Vec<Delivery>, sqlx::Error> {
     sqlx::query_as::<_, Delivery>(
         r#"
-        SELECT id, signal_id, subscription_id, webhook_id, attempt,
+        SELECT id, signal_id, subscription_id, webhook_id, delivery_mode, attempt,
                status, status_code, error_message, latency_ms,
                created_at, updated_at
         FROM deliveries
@@ -117,7 +119,7 @@ pub async fn list_by_signal(pool: &PgPool, signal_id: &str) -> Result<Vec<Delive
 pub async fn get_by_id(pool: &PgPool, id: &str) -> Result<Option<Delivery>, sqlx::Error> {
     sqlx::query_as::<_, Delivery>(
         r#"
-        SELECT id, signal_id, subscription_id, webhook_id, attempt,
+        SELECT id, signal_id, subscription_id, webhook_id, delivery_mode, attempt,
                status, status_code, error_message, latency_ms,
                created_at, updated_at
         FROM deliveries

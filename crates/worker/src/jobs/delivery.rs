@@ -1,11 +1,22 @@
 use anyhow::Context;
 use chrono::Utc;
 use core::{auth::sign_payload, types::DeliveryJob};
-use db::models::{DeliveryStatus, SignalUrgency};
+use core::tunnel::{ServerMessage, TunnelSignal};
+use core::types::SignalUrgency as CoreSignalUrgency;
+use db::models::{DeliveryMode, DeliveryStatus, SignalUrgency};
 use serde_json::json;
 use std::time::Instant;
 
 use crate::WorkerState;
+
+fn convert_urgency(urgency: &SignalUrgency) -> CoreSignalUrgency {
+    match urgency {
+        SignalUrgency::Low => CoreSignalUrgency::Low,
+        SignalUrgency::Normal => CoreSignalUrgency::Normal,
+        SignalUrgency::High => CoreSignalUrgency::High,
+        SignalUrgency::Critical => CoreSignalUrgency::Critical,
+    }
+}
 
 pub fn retry_policy(attempt: u32) -> std::time::Duration {
     match attempt {
@@ -25,9 +36,6 @@ pub async fn handle_delivery_job(state: &WorkerState, job: DeliveryJob) -> anyho
     let subscription = db::queries::subscriptions::get_by_id(&state.db, &job.subscription_id)
         .await?
         .context("subscription not found")?;
-    let webhook = db::queries::webhooks::get_by_id(&state.db, &job.webhook_id)
-        .await?
-        .context("webhook not found")?;
     let channel = db::queries::channels::get_by_id(&state.db, &signal.channel_id)
         .await?
         .context("channel not found")?;
@@ -35,34 +43,70 @@ pub async fn handle_delivery_job(state: &WorkerState, job: DeliveryJob) -> anyho
         .await?
         .context("subscriber not found")?;
 
+    if let Some(agent) = state
+        .tunnel_registry
+        .get(&subscription.subscriber_id)
+        .await
+    {
+        let allow_retry = subscription.webhook_id.is_none();
+        if deliver_via_tunnel(
+            state,
+            &signal,
+            &subscription,
+            &channel,
+            &agent,
+            job.attempt,
+            allow_retry,
+        )
+            .await?
+        {
+            return Ok(());
+        }
+    }
+
+    if let Some(webhook_id) = subscription.webhook_id.as_deref() {
+        let webhook = db::queries::webhooks::get_by_id(&state.db, webhook_id)
+            .await?
+            .context("webhook not found")?;
+
+        return deliver_via_webhook(
+            state,
+            &signal,
+            &subscription,
+            &channel,
+            &subscriber,
+            &webhook,
+            job.attempt,
+        )
+        .await;
+    }
+
+    Err(anyhow::anyhow!("No delivery method available"))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn deliver_via_webhook(
+    state: &WorkerState,
+    signal: &db::models::Signal,
+    subscription: &db::models::Subscription,
+    channel: &db::models::Channel,
+    subscriber: &db::models::Subscriber,
+    webhook: &db::models::Webhook,
+    attempt: i32,
+) -> anyhow::Result<()> {
     let delivery_id = format!("del_{}", nanoid::nanoid!(12));
     let delivery = db::queries::deliveries::create(
         &state.db,
         &delivery_id,
         &signal.id,
         &subscription.id,
-        &webhook.id,
-        job.attempt,
+        Some(&webhook.id),
+        DeliveryMode::Webhook,
+        attempt,
     )
     .await?;
 
-    let payload = json!({
-        "deliveryId": delivery.id,
-        "webhookId": webhook.id,
-        "channel": {
-            "id": channel.id,
-            "slug": channel.slug,
-            "displayName": channel.display_name,
-        },
-        "signal": {
-            "id": signal.id,
-            "title": signal.title,
-            "body": signal.body,
-            "urgency": signal.urgency,
-            "metadata": signal.metadata,
-            "createdAt": signal.created_at,
-        }
-    });
+    let payload = build_payload(&delivery.id, Some(&webhook.id), channel, signal);
 
     let body = serde_json::to_string(&payload)?;
     let timestamp = Utc::now().timestamp();
@@ -107,14 +151,14 @@ pub async fn handle_delivery_job(state: &WorkerState, job: DeliveryJob) -> anyho
             }
 
             let error_message = format!("HTTP {}", status_code);
-            handle_failure(
+            handle_webhook_failure(
                 state,
-                &signal,
-                &subscription,
-                &webhook,
+                signal,
+                subscription,
+                webhook,
                 &payload,
                 delivery.id,
-                job.attempt,
+                attempt,
                 Some(status_code),
                 &error_message,
                 latency_ms,
@@ -122,14 +166,14 @@ pub async fn handle_delivery_job(state: &WorkerState, job: DeliveryJob) -> anyho
             .await
         }
         Err(err) => {
-            handle_failure(
+            handle_webhook_failure(
                 state,
-                &signal,
-                &subscription,
-                &webhook,
+                signal,
+                subscription,
+                webhook,
                 &payload,
                 delivery.id,
-                job.attempt,
+                attempt,
                 None,
                 &err.to_string(),
                 latency_ms,
@@ -140,7 +184,7 @@ pub async fn handle_delivery_job(state: &WorkerState, job: DeliveryJob) -> anyho
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn handle_failure(
+async fn handle_webhook_failure(
     state: &WorkerState,
     signal: &db::models::Signal,
     subscription: &db::models::Subscription,
@@ -195,7 +239,7 @@ async fn handle_failure(
     let next_job = DeliveryJob {
         signal_id: signal.id.clone(),
         subscription_id: subscription.id.clone(),
-        webhook_id: webhook.id.clone(),
+        webhook_id: Some(webhook.id.clone()),
         attempt: attempt + 1,
     };
 
@@ -207,4 +251,167 @@ async fn handle_failure(
     });
 
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn deliver_via_tunnel(
+    state: &WorkerState,
+    signal: &db::models::Signal,
+    subscription: &db::models::Subscription,
+    channel: &db::models::Channel,
+    agent: &std::sync::Arc<core::tunnel::AgentConnection>,
+    attempt: i32,
+    allow_retry: bool,
+) -> anyhow::Result<bool> {
+    let delivery_id = format!("del_{}", nanoid::nanoid!(12));
+    let delivery = db::queries::deliveries::create(
+        &state.db,
+        &delivery_id,
+        &signal.id,
+        &subscription.id,
+        None,
+        DeliveryMode::Agent,
+        attempt,
+    )
+    .await?;
+
+    let message = ServerMessage::Signal {
+        delivery_id: delivery.id.clone(),
+        channel_id: channel.id.clone(),
+        channel_slug: channel.slug.clone(),
+        signal: TunnelSignal {
+            id: signal.id.clone(),
+            title: signal.title.clone(),
+            body: signal.body.clone(),
+            urgency: convert_urgency(&signal.urgency),
+            metadata: signal.metadata.clone(),
+            created_at: signal.created_at,
+        },
+    };
+
+    let payload = build_payload(&delivery.id, subscription.webhook_id.as_deref(), channel, signal);
+
+    if let Err(err) = agent.sender.send(message).await {
+        handle_tunnel_failure(
+            state,
+            signal,
+            subscription,
+            &payload,
+            delivery.id,
+            attempt,
+            &err.to_string(),
+            allow_retry,
+        )
+        .await?;
+        return Ok(false);
+    }
+
+    db::queries::deliveries::update_status(
+        &state.db,
+        &delivery.id,
+        DeliveryStatus::Success,
+        None,
+        None,
+        None,
+    )
+    .await?;
+
+    db::queries::signals::increment_delivery_counts(&state.db, &signal.id, 1, 0, 1).await?;
+
+    Ok(true)
+}
+
+async fn handle_tunnel_failure(
+    state: &WorkerState,
+    signal: &db::models::Signal,
+    subscription: &db::models::Subscription,
+    payload: &serde_json::Value,
+    delivery_id: String,
+    attempt: i32,
+    error_message: &str,
+    allow_retry: bool,
+) -> anyhow::Result<()> {
+    db::queries::deliveries::update_status(
+        &state.db,
+        &delivery_id,
+        DeliveryStatus::Failed,
+        None,
+        Some(error_message),
+        None,
+    )
+    .await?;
+
+    db::queries::signals::increment_delivery_counts(&state.db, &signal.id, 0, 1, 1).await?;
+
+    if !allow_retry {
+        return Ok(());
+    }
+
+    if attempt >= 5 {
+        let error_history = json!([
+            {
+                "attempt": attempt,
+                "error": error_message,
+                "statusCode": null,
+            }
+        ]);
+        let dlq_id = format!("dlq_{}", nanoid::nanoid!(12));
+        db::queries::dead_letter_queue::create(
+            &state.db,
+            &dlq_id,
+            &delivery_id,
+            &signal.id,
+            &subscription.id,
+            payload.clone(),
+            error_history,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let queue = match signal.urgency {
+        SignalUrgency::High | SignalUrgency::Critical => "delivery-high",
+        _ => "delivery-normal",
+    };
+
+    let next_job = DeliveryJob {
+        signal_id: signal.id.clone(),
+        subscription_id: subscription.id.clone(),
+        webhook_id: subscription.webhook_id.clone(),
+        attempt: attempt + 1,
+    };
+
+    let delay = retry_policy((attempt + 1) as u32);
+    let storage = state.storage.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        let _ = storage.push(queue, next_job).await;
+    });
+
+    Ok(())
+}
+
+fn build_payload(
+    delivery_id: &str,
+    webhook_id: Option<&str>,
+    channel: &db::models::Channel,
+    signal: &db::models::Signal,
+) -> serde_json::Value {
+    json!({
+        "deliveryId": delivery_id,
+        "webhookId": webhook_id,
+        "channel": {
+            "id": &channel.id,
+            "slug": &channel.slug,
+            "displayName": &channel.display_name,
+        },
+        "signal": {
+            "id": &signal.id,
+            "title": &signal.title,
+            "body": &signal.body,
+            "urgency": &signal.urgency,
+            "metadata": &signal.metadata,
+            "createdAt": &signal.created_at,
+        }
+    })
 }

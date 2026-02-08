@@ -9,6 +9,7 @@ mod error;
 mod middleware;
 mod routes;
 mod state;
+mod tunnel;
 
 use crate::middleware::auth::api_key_auth;
 use crate::middleware::metrics::metrics;
@@ -40,6 +41,7 @@ async fn main() -> anyhow::Result<()> {
         redis,
         storage,
         settings: settings.clone(),
+        tunnel_registry: core::tunnel::AGENT_REGISTRY.clone(),
     };
 
     let v1 = routes::v1_router(state.clone())

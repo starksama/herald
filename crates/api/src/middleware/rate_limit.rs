@@ -11,6 +11,10 @@ pub async fn rate_limit(
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
+    if req.uri().path() == "/v1/tunnel" {
+        return Ok(next.run(req).await);
+    }
+
     let request_id = req
         .extensions()
         .get::<RequestId>()

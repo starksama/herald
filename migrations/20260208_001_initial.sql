@@ -8,6 +8,7 @@ CREATE TYPE signal_status AS ENUM ('active', 'deleted');
 CREATE TYPE subscription_status AS ENUM ('active', 'paused', 'canceled');
 CREATE TYPE webhook_status AS ENUM ('active', 'paused', 'disabled');
 CREATE TYPE delivery_status AS ENUM ('pending', 'success', 'failed');
+CREATE TYPE delivery_mode AS ENUM ('agent', 'webhook');
 CREATE TYPE api_key_owner AS ENUM ('publisher', 'subscriber');
 CREATE TYPE api_key_status AS ENUM ('active', 'revoked', 'expired');
 
@@ -33,6 +34,8 @@ CREATE TABLE subscribers (
   stripe_customer_id TEXT,
   tier account_tier NOT NULL DEFAULT 'free',
   status account_status NOT NULL DEFAULT 'active',
+  delivery_mode delivery_mode NOT NULL DEFAULT 'agent',
+  agent_last_connected_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -90,7 +93,7 @@ CREATE TABLE subscriptions (
   id TEXT PRIMARY KEY,
   subscriber_id TEXT NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE,
   channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-  webhook_id TEXT NOT NULL REFERENCES webhooks(id) ON DELETE RESTRICT,
+  webhook_id TEXT REFERENCES webhooks(id) ON DELETE RESTRICT,
   status subscription_status NOT NULL DEFAULT 'active',
   stripe_subscription_id TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -103,7 +106,8 @@ CREATE TABLE deliveries (
   id TEXT PRIMARY KEY,
   signal_id TEXT NOT NULL REFERENCES signals(id) ON DELETE CASCADE,
   subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
-  webhook_id TEXT NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+  webhook_id TEXT REFERENCES webhooks(id) ON DELETE CASCADE,
+  delivery_mode delivery_mode NOT NULL,
   attempt INTEGER NOT NULL,
   status delivery_status NOT NULL DEFAULT 'pending',
   status_code INTEGER,
@@ -111,6 +115,18 @@ CREATE TABLE deliveries (
   latency_ms INTEGER,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- agent_connections
+CREATE TABLE agent_connections (
+  id TEXT PRIMARY KEY,
+  subscriber_id TEXT NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE,
+  connection_id TEXT NOT NULL,
+  server_id TEXT NOT NULL,
+  connected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  disconnected_at TIMESTAMPTZ,
+  disconnect_reason TEXT,
+  signals_delivered INTEGER NOT NULL DEFAULT 0
 );
 
 -- api_keys
@@ -148,5 +164,6 @@ CREATE INDEX idx_signals_channel_time ON signals (channel_id, created_at DESC);
 CREATE INDEX idx_subscriptions_channel_active ON subscriptions (channel_id)
   WHERE status = 'active';
 CREATE INDEX idx_deliveries_signal ON deliveries (signal_id);
+CREATE INDEX idx_agent_connections_subscriber ON agent_connections (subscriber_id, connected_at DESC);
 CREATE UNIQUE INDEX idx_api_keys_hash_active ON api_keys (key_hash)
   WHERE status = 'active';

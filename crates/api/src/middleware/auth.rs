@@ -27,6 +27,10 @@ pub async fn api_key_auth(
     mut req: Request<Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
+    if req.uri().path() == "/v1/tunnel" {
+        return Ok(next.run(req).await);
+    }
+
     let request_id = req
         .extensions()
         .get::<RequestId>()

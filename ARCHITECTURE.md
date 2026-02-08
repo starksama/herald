@@ -2,53 +2,111 @@
 
 > Production-ready, end-to-end technical blueprint for building Herald.
 
-**Version:** 1.0  
+**Version:** 2.0  
 **Date:** 2026-02-08
 
 ---
 
 ## 1. System Overview
 
-Herald is a signal marketplace that routes publisher signals to subscriber webhooks with at-least-once delivery, retries, and observability. The system is split into an HTTP API (Axum) and background workers (apalis) backed by PostgreSQL and Redis.
+Herald is a signal marketplace that routes publisher signals to subscribers with at-least-once delivery, retries, and observability. The system supports two delivery modes:
+
+1. **Herald Agent (Recommended)** — Secure tunnel-based delivery. No public endpoints required.
+2. **Webhooks (Legacy)** — Traditional HTTPS push with HMAC signatures.
 
 ### 1.1 Architecture Diagram (ASCII)
 
 ```
                                    +-------------------------+
                                    |        OpenClaw         |
-                                   |  /hooks/wake, /hooks/agent
+                                   |  (localhost webhook)    |
                                    +-----------+-------------+
                                                ^
-                                               |
+                                               | (local delivery)
 +-------------+       HTTPS        +-----------+-------------+
 | Publishers  |  --->  API  ---->  |        Herald API        |
 | (API keys)  |                    |  Axum + sqlx + Redis     |
 +-------------+                    +-----------+-------------+
-                                              | (enqueue)
-                                              v
-                                       +------+------+
-                                       |  apalis     |
-                                       |  Job Queue  |
-                                       +------+------+
-                                              | (fetch)
-                                              v
-+-------------+       HTTPS        +-----------+-------------+
-| Subscribers |  <--- Webhooks --- |      Herald Workers     |
-| (HMAC)      |                    |  delivery + retries     |
-+-------------+                    +-----------+-------------+
-                                              |
-                                              v
-                                    +---------+---------+
-                                    |   PostgreSQL      |
-                                    | (core data + jobs)|
-                                    +---------+---------+
-                                              |
-                                              v
-                                      +-------+-------+
-                                      |      Redis    |
-                                      | rate limit    |
-                                      +---------------+
+                                        │              ▲
+                                        │ (enqueue)    │ (tunnel)
+                                        ▼              │
+                                   +----+----+    +----+--------+
+                                   | apalis  |    | Tunnel      |
+                                   | Queue   |    | Server (WS) │
+                                   +----+----+    +------+------+
+                                        │                │
+                                        │ (fetch)        │ (outbound conn)
+                                        ▼                │
+                          +-------------+-------------+  │
+                          |      Herald Workers       │  │
+                          |  delivery + retries       │  │
+                          +-------------+-------------+  │
+                                        │                │
+              ┌─────────────────────────┼────────────────┘
+              │                         │
+              ▼                         ▼
+    +─────────────────+       +─────────────────+
+    │  herald-agent   │       │  Webhook (HTTPS)│
+    │  (customer)     │       │  (legacy)       │
+    │                 │       │                 │
+    │  ┌───────────┐  │       │  Public endpoint│
+    │  │ localhost │  │       │  + HMAC verify  │
+    │  │ delivery  │  │       │                 │
+    │  └───────────┘  │       │                 │
+    +─────────────────+       +─────────────────+
+              │
+              ▼
+    +---------+---------+
+    |   PostgreSQL      |
+    | (core data + jobs)|
+    +---------+---------+
+              │
+              ▼
+      +-------+-------+
+      |     Redis     |
+      |  rate limit   |
+      +---------------+
 ```
+
+### 1.2 Delivery Modes
+
+#### Herald Agent (Recommended)
+
+The Herald Agent is a lightweight binary that runs on the subscriber's network:
+
+```bash
+herald-agent --token hld_sub_xxx --forward http://localhost:8080/hooks/herald
+```
+
+**How it works:**
+1. Agent authenticates with Herald using subscriber API key
+2. Opens persistent WebSocket connection (outbound only)
+3. Herald pushes signals through the tunnel
+4. Agent delivers to local endpoint (localhost)
+
+**Benefits:**
+- No public endpoints required
+- No firewall/NAT configuration
+- No TLS certificate management
+- Secure by default
+
+#### Webhooks (Legacy)
+
+Traditional HTTPS push for systems that require it:
+- Public endpoint required
+- HMAC signature verification required
+- TLS certificate required
+
+### 1.3 Request Flow (High Level)
+
+1. Publisher sends `POST /v1/channels/:id/signals` with API key.
+2. API validates key, rate limit, and payload. Signal is stored in `signals`.
+3. For each active subscription, a `DeliveryJob` is enqueued in apalis.
+4. Worker checks delivery mode:
+   - **Agent mode:** Find connected agent, push through WebSocket tunnel
+   - **Webhook mode:** Sign payload (HMAC-SHA256), POST to webhook URL
+5. Delivery attempt is recorded in `deliveries`. Success updates stats, failure schedules retry.
+6. After final retry, job is placed into `dead_letter_queue` and alert job is enqueued.
 
 ### 1.2 Request Flow (High Level)
 
@@ -79,6 +137,11 @@ herald/
 │   │   │   │   ├── subscriptions.rs
 │   │   │   │   ├── webhooks.rs
 │   │   │   │   └── health.rs
+│   │   │   ├── tunnel/        # WebSocket tunnel server
+│   │   │   │   ├── mod.rs
+│   │   │   │   ├── server.rs  # WS upgrade + connection handling
+│   │   │   │   ├── registry.rs # Track connected agents
+│   │   │   │   └── protocol.rs # Message format
 │   │   │   ├── middleware/
 │   │   │   │   ├── mod.rs
 │   │   │   │   ├── auth.rs
@@ -91,8 +154,16 @@ herald/
 │   │   │   ├── main.rs
 │   │   │   └── jobs/
 │   │   │       ├── mod.rs
-│   │   │       ├── delivery.rs
+│   │   │       ├── delivery.rs # Supports both tunnel + webhook
 │   │   │       └── stats.rs
+│   │   └── Cargo.toml
+│   │
+│   ├── agent/                 # Herald Agent (customer-side binary)
+│   │   ├── src/
+│   │   │   ├── main.rs        # CLI entry point
+│   │   │   ├── tunnel.rs      # WebSocket client + reconnect
+│   │   │   ├── forward.rs     # Local HTTP delivery
+│   │   │   └── config.rs      # Agent configuration
 │   │   └── Cargo.toml
 │   │
 │   ├── core/                  # Shared types and logic
@@ -144,6 +215,7 @@ CREATE TYPE signal_status AS ENUM ('active', 'deleted');
 CREATE TYPE subscription_status AS ENUM ('active', 'paused', 'canceled');
 CREATE TYPE webhook_status AS ENUM ('active', 'paused', 'disabled');
 CREATE TYPE delivery_status AS ENUM ('pending', 'success', 'failed');
+CREATE TYPE delivery_mode AS ENUM ('agent', 'webhook');  -- NEW: delivery mode
 CREATE TYPE api_key_owner AS ENUM ('publisher', 'subscriber');
 CREATE TYPE api_key_status AS ENUM ('active', 'revoked', 'expired');
 
@@ -169,6 +241,8 @@ CREATE TABLE subscribers (
   stripe_customer_id TEXT,
   tier account_tier NOT NULL DEFAULT 'free',
   status account_status NOT NULL DEFAULT 'active',
+  delivery_mode delivery_mode NOT NULL DEFAULT 'agent',  -- prefer agent by default
+  agent_last_connected_at TIMESTAMPTZ,                   -- track agent connectivity
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -226,7 +300,7 @@ CREATE TABLE subscriptions (
   id TEXT PRIMARY KEY,
   subscriber_id TEXT NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE,
   channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-  webhook_id TEXT NOT NULL REFERENCES webhooks(id) ON DELETE RESTRICT,
+  webhook_id TEXT REFERENCES webhooks(id) ON DELETE RESTRICT,  -- optional for agent mode
   status subscription_status NOT NULL DEFAULT 'active',
   stripe_subscription_id TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -239,7 +313,8 @@ CREATE TABLE deliveries (
   id TEXT PRIMARY KEY,
   signal_id TEXT NOT NULL REFERENCES signals(id) ON DELETE CASCADE,
   subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
-  webhook_id TEXT NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+  webhook_id TEXT REFERENCES webhooks(id) ON DELETE CASCADE,  -- NULL for agent delivery
+  delivery_mode delivery_mode NOT NULL,                       -- track how it was delivered
   attempt INTEGER NOT NULL,
   status delivery_status NOT NULL DEFAULT 'pending',
   status_code INTEGER,
@@ -248,6 +323,20 @@ CREATE TABLE deliveries (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- agent_connections (track connection history for observability)
+CREATE TABLE agent_connections (
+  id TEXT PRIMARY KEY,
+  subscriber_id TEXT NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE,
+  connection_id TEXT NOT NULL,
+  server_id TEXT NOT NULL,              -- which API server holds the connection
+  connected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  disconnected_at TIMESTAMPTZ,
+  disconnect_reason TEXT,
+  signals_delivered INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX idx_agent_connections_subscriber ON agent_connections (subscriber_id, connected_at DESC);
 
 -- api_keys
 CREATE TABLE api_keys (
@@ -827,6 +916,265 @@ pub async fn enqueue_deliveries(
 
     storage.push(queue, job).await?;
     Ok(())
+}
+
+### 5.4 Delivery Mode Selection
+
+When processing a `DeliveryJob`, the worker checks the delivery mode:
+
+```rust
+pub async fn deliver(job: DeliveryJob, ctx: &AppContext) -> Result<()> {
+    let subscription = db::subscriptions::get(&ctx.db, &job.subscription_id).await?;
+    
+    // Check if agent is connected (tunnel mode)
+    if let Some(agent) = ctx.tunnel_registry.get(&subscription.subscriber_id) {
+        // Tunnel delivery - push through WebSocket
+        deliver_via_tunnel(agent, job, ctx).await
+    } else if let Some(webhook) = db::webhooks::get(&ctx.db, &subscription.webhook_id).await? {
+        // Fallback to webhook delivery
+        deliver_via_webhook(webhook, job, ctx).await
+    } else {
+        Err(anyhow!("No delivery method available"))
+    }
+}
+```
+
+---
+
+## 5A. Tunnel Protocol (Herald Agent)
+
+The tunnel protocol enables secure, zero-config delivery to subscribers without public endpoints.
+
+### 5A.1 Overview
+
+```
+┌─────────────────────┐              ┌─────────────────────┐
+│    Herald API       │              │    herald-agent     │
+│                     │◀─────────────│    (customer)       │
+│  ┌───────────────┐  │   WebSocket  │                     │
+│  │ Tunnel Server │  │   (outbound) │  ┌───────────────┐  │
+│  └───────────────┘  │              │  │ Local Forward │  │
+│         │           │              │  └───────────────┘  │
+│         ▼           │              │         │           │
+│  ┌───────────────┐  │              │         ▼           │
+│  │ Agent Registry│  │              │  ┌───────────────┐  │
+│  └───────────────┘  │              │  │ OpenClaw/App  │  │
+└─────────────────────┘              └──┴───────────────┴──┘
+```
+
+### 5A.2 Connection Flow
+
+1. Agent starts with subscriber token: `herald-agent --token hld_sub_xxx`
+2. Agent connects to `wss://api.herald.dev/v1/tunnel`
+3. Agent sends `Auth` message with API key
+4. Server validates key, registers agent in memory
+5. Server sends `AuthOk` with connection ID
+6. Connection is now ready for signal delivery
+
+### 5A.3 Protocol Messages
+
+All messages are JSON over WebSocket.
+
+**Client → Server:**
+
+```typescript
+// Authentication (first message)
+{ "type": "auth", "token": "hld_sub_xxx" }
+
+// Delivery acknowledgment
+{ "type": "ack", "delivery_id": "del_xyz789" }
+
+// Heartbeat response
+{ "type": "pong" }
+```
+
+**Server → Client:**
+
+```typescript
+// Authentication success
+{ "type": "auth_ok", "connection_id": "conn_abc", "subscriber_id": "sub_001" }
+
+// Authentication failure
+{ "type": "auth_error", "message": "Invalid token" }
+
+// Signal delivery
+{
+  "type": "signal",
+  "delivery_id": "del_xyz789",
+  "channel_id": "ch_abc123",
+  "channel_slug": "tech-news",
+  "signal": {
+    "id": "sig_xyz789",
+    "title": "OpenAI releases GPT-5",
+    "body": "New model with 10x context...",
+    "urgency": "high",
+    "metadata": {},
+    "created_at": "2026-02-08T06:30:00Z"
+  }
+}
+
+// Heartbeat
+{ "type": "ping" }
+```
+
+### 5A.4 Agent Registry
+
+The API server maintains an in-memory registry of connected agents:
+
+```rust
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use tokio::sync::mpsc;
+
+pub struct AgentConnection {
+    pub connection_id: String,
+    pub subscriber_id: String,
+    pub sender: mpsc::Sender<TunnelMessage>,
+    pub connected_at: chrono::DateTime<chrono::Utc>,
+}
+
+pub struct AgentRegistry {
+    agents: RwLock<HashMap<String, Arc<AgentConnection>>>,  // subscriber_id -> connection
+}
+
+impl AgentRegistry {
+    pub async fn register(&self, conn: AgentConnection) {
+        let subscriber_id = conn.subscriber_id.clone();
+        self.agents.write().await.insert(subscriber_id, Arc::new(conn));
+    }
+
+    pub async fn unregister(&self, subscriber_id: &str) {
+        self.agents.write().await.remove(subscriber_id);
+    }
+
+    pub async fn get(&self, subscriber_id: &str) -> Option<Arc<AgentConnection>> {
+        self.agents.read().await.get(subscriber_id).cloned()
+    }
+}
+```
+
+### 5A.5 Tunnel Delivery
+
+When a `DeliveryJob` is processed and the subscriber has a connected agent:
+
+```rust
+pub async fn deliver_via_tunnel(
+    agent: Arc<AgentConnection>,
+    job: DeliveryJob,
+    ctx: &AppContext,
+) -> Result<()> {
+    let signal = db::signals::get(&ctx.db, &job.signal_id).await?;
+    let channel = db::channels::get(&ctx.db, &signal.channel_id).await?;
+
+    let message = TunnelMessage::Signal {
+        delivery_id: generate_delivery_id(),
+        channel_id: channel.id,
+        channel_slug: channel.slug,
+        signal: signal.into(),
+    };
+
+    // Send through WebSocket
+    agent.sender.send(message).await?;
+
+    // Record successful delivery
+    db::deliveries::record_success(&ctx.db, &job, None).await?;
+
+    Ok(())
+}
+```
+
+### 5A.6 Herald Agent (Client)
+
+The agent is a standalone binary that subscribers run:
+
+```bash
+# Install
+curl -fsSL https://herald.dev/install.sh | sh
+
+# Run
+herald-agent --token hld_sub_xxx --forward http://localhost:8080/hooks/herald
+
+# Or with config file
+herald-agent --config /etc/herald/agent.toml
+```
+
+**Agent config (agent.toml):**
+
+```toml
+token = "hld_sub_xxx"
+forward_url = "http://localhost:8080/hooks/herald"
+herald_url = "wss://api.herald.dev/v1/tunnel"  # optional, defaults to production
+
+[retry]
+max_attempts = 3
+initial_delay_ms = 1000
+
+[health]
+port = 9090  # optional health check endpoint
+```
+
+**Agent behavior:**
+- Maintains persistent WebSocket connection
+- Auto-reconnects with exponential backoff
+- Forwards signals to local endpoint via HTTP POST
+- Sends ACK after successful local delivery
+- Health endpoint at `/health` (optional)
+
+### 5A.7 Reconnection Logic
+
+```rust
+pub async fn run_tunnel(config: AgentConfig) -> Result<()> {
+    let mut backoff = ExponentialBackoff::default();
+    
+    loop {
+        match connect_and_run(&config).await {
+            Ok(()) => {
+                // Clean disconnect
+                tracing::info!("Tunnel disconnected cleanly");
+                backoff.reset();
+            }
+            Err(e) => {
+                tracing::error!("Tunnel error: {}", e);
+            }
+        }
+
+        let delay = backoff.next_backoff().unwrap_or(Duration::from_secs(60));
+        tracing::info!("Reconnecting in {:?}", delay);
+        tokio::time::sleep(delay).await;
+    }
+}
+```
+
+### 5A.8 High Availability
+
+For production deployments with multiple API servers:
+
+1. **Sticky sessions:** Use load balancer with connection affinity
+2. **Registry sync:** Use Redis pub/sub to route deliveries to correct server
+3. **Graceful shutdown:** Drain connections before server restart
+
+```rust
+// Redis-backed registry for multi-server setup
+pub struct DistributedAgentRegistry {
+    local: AgentRegistry,
+    redis: redis::Client,
+}
+
+impl DistributedAgentRegistry {
+    pub async fn register(&self, conn: AgentConnection) {
+        let server_id = std::env::var("SERVER_ID").unwrap();
+        
+        // Register locally
+        self.local.register(conn.clone()).await;
+        
+        // Publish to Redis for routing
+        self.redis.hset(
+            "herald:agents",
+            &conn.subscriber_id,
+            &server_id
+        ).await;
+    }
 }
 ```
 

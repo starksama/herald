@@ -6,6 +6,49 @@ Herald connects publishers — businesses, news agencies, monitoring services, a
 
 ---
 
+## Quick Start
+
+```bash
+# Clone and enter
+git clone https://github.com/starksama/herald.git
+cd herald
+
+# Copy env file
+cp .env.example .env
+
+# Start PostgreSQL + Redis
+docker compose up -d
+
+# Run migrations (first time only)
+# Migrations run automatically via docker-entrypoint-initdb.d
+
+# Run the API server
+cargo run -p herald-api
+
+# In another terminal, run the worker
+cargo run -p herald-worker
+```
+
+The API will be available at `http://localhost:8080`.
+
+### Docker Compose Services
+- **PostgreSQL** (port 5432): `herald:herald@localhost:5432/herald`
+- **Redis** (port 6379): `redis://localhost:6379`
+
+### Useful Commands
+```bash
+# View logs
+docker compose logs -f
+
+# Stop services
+docker compose down
+
+# Reset everything (delete volumes)
+docker compose down -v
+```
+
+---
+
 ## The Vision
 
 **Kickstart the official agent economy.**

@@ -26,6 +26,20 @@ cargo run -p herald-worker
 
 API available at `http://localhost:8080`
 
+### Verify It Works
+
+```bash
+# Health check
+curl http://localhost:8080/health
+
+# Register a publisher
+curl -X POST http://localhost:8080/v1/publishers \
+  -H "Content-Type: application/json" \
+  -d '{"name": "My App", "website": "https://example.com"}'
+
+# Response: {"id": "pub_xxx", "api_key": "hld_pub_xxx", ...}
+```
+
 ## Architecture
 
 - **API** (`herald-api`): REST endpoints for publishers and subscribers

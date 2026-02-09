@@ -285,3 +285,158 @@ pub struct DeliveryJob {
     pub webhook_id: Option<String>,
     pub attempt: i32,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================================
+    // Enum Serialization Tests (lowercase rename_all)
+    // ============================================================
+
+    #[test]
+    fn test_pricing_tier_serialization() {
+        assert_eq!(serde_json::to_string(&PricingTier::Free).unwrap(), "\"free\"");
+        assert_eq!(serde_json::to_string(&PricingTier::Pro).unwrap(), "\"pro\"");
+        assert_eq!(serde_json::to_string(&PricingTier::Enterprise).unwrap(), "\"enterprise\"");
+    }
+
+    #[test]
+    fn test_pricing_tier_deserialization() {
+        assert_eq!(serde_json::from_str::<PricingTier>("\"free\"").unwrap(), PricingTier::Free);
+        assert_eq!(serde_json::from_str::<PricingTier>("\"pro\"").unwrap(), PricingTier::Pro);
+        assert_eq!(serde_json::from_str::<PricingTier>("\"enterprise\"").unwrap(), PricingTier::Enterprise);
+    }
+
+    #[test]
+    fn test_account_tier_serialization() {
+        assert_eq!(serde_json::to_string(&AccountTier::Free).unwrap(), "\"free\"");
+        assert_eq!(serde_json::to_string(&AccountTier::Pro).unwrap(), "\"pro\"");
+        assert_eq!(serde_json::to_string(&AccountTier::Enterprise).unwrap(), "\"enterprise\"");
+    }
+
+    #[test]
+    fn test_account_status_serialization() {
+        assert_eq!(serde_json::to_string(&AccountStatus::Active).unwrap(), "\"active\"");
+        assert_eq!(serde_json::to_string(&AccountStatus::Suspended).unwrap(), "\"suspended\"");
+        assert_eq!(serde_json::to_string(&AccountStatus::Deleted).unwrap(), "\"deleted\"");
+    }
+
+    #[test]
+    fn test_channel_status_serialization() {
+        assert_eq!(serde_json::to_string(&ChannelStatus::Active).unwrap(), "\"active\"");
+        assert_eq!(serde_json::to_string(&ChannelStatus::Paused).unwrap(), "\"paused\"");
+        assert_eq!(serde_json::to_string(&ChannelStatus::Deleted).unwrap(), "\"deleted\"");
+    }
+
+    #[test]
+    fn test_signal_urgency_serialization() {
+        assert_eq!(serde_json::to_string(&SignalUrgency::Low).unwrap(), "\"low\"");
+        assert_eq!(serde_json::to_string(&SignalUrgency::Normal).unwrap(), "\"normal\"");
+        assert_eq!(serde_json::to_string(&SignalUrgency::High).unwrap(), "\"high\"");
+        assert_eq!(serde_json::to_string(&SignalUrgency::Critical).unwrap(), "\"critical\"");
+    }
+
+    #[test]
+    fn test_signal_urgency_deserialization() {
+        assert_eq!(serde_json::from_str::<SignalUrgency>("\"low\"").unwrap(), SignalUrgency::Low);
+        assert_eq!(serde_json::from_str::<SignalUrgency>("\"normal\"").unwrap(), SignalUrgency::Normal);
+        assert_eq!(serde_json::from_str::<SignalUrgency>("\"high\"").unwrap(), SignalUrgency::High);
+        assert_eq!(serde_json::from_str::<SignalUrgency>("\"critical\"").unwrap(), SignalUrgency::Critical);
+    }
+
+    #[test]
+    fn test_webhook_status_serialization() {
+        assert_eq!(serde_json::to_string(&WebhookStatus::Active).unwrap(), "\"active\"");
+        assert_eq!(serde_json::to_string(&WebhookStatus::Paused).unwrap(), "\"paused\"");
+        assert_eq!(serde_json::to_string(&WebhookStatus::Disabled).unwrap(), "\"disabled\"");
+    }
+
+    #[test]
+    fn test_delivery_status_serialization() {
+        assert_eq!(serde_json::to_string(&DeliveryStatus::Pending).unwrap(), "\"pending\"");
+        assert_eq!(serde_json::to_string(&DeliveryStatus::Success).unwrap(), "\"success\"");
+        assert_eq!(serde_json::to_string(&DeliveryStatus::Failed).unwrap(), "\"failed\"");
+    }
+
+    #[test]
+    fn test_delivery_mode_serialization() {
+        assert_eq!(serde_json::to_string(&DeliveryMode::Agent).unwrap(), "\"agent\"");
+        assert_eq!(serde_json::to_string(&DeliveryMode::Webhook).unwrap(), "\"webhook\"");
+    }
+
+    #[test]
+    fn test_api_key_owner_serialization() {
+        assert_eq!(serde_json::to_string(&ApiKeyOwner::Publisher).unwrap(), "\"publisher\"");
+        assert_eq!(serde_json::to_string(&ApiKeyOwner::Subscriber).unwrap(), "\"subscriber\"");
+    }
+
+    #[test]
+    fn test_api_key_status_serialization() {
+        assert_eq!(serde_json::to_string(&ApiKeyStatus::Active).unwrap(), "\"active\"");
+        assert_eq!(serde_json::to_string(&ApiKeyStatus::Revoked).unwrap(), "\"revoked\"");
+        assert_eq!(serde_json::to_string(&ApiKeyStatus::Expired).unwrap(), "\"expired\"");
+    }
+
+    #[test]
+    fn test_subscription_status_serialization() {
+        assert_eq!(serde_json::to_string(&SubscriptionStatus::Active).unwrap(), "\"active\"");
+        assert_eq!(serde_json::to_string(&SubscriptionStatus::Paused).unwrap(), "\"paused\"");
+        assert_eq!(serde_json::to_string(&SubscriptionStatus::Canceled).unwrap(), "\"canceled\"");
+    }
+
+    #[test]
+    fn test_signal_status_serialization() {
+        assert_eq!(serde_json::to_string(&SignalStatus::Active).unwrap(), "\"active\"");
+        assert_eq!(serde_json::to_string(&SignalStatus::Deleted).unwrap(), "\"deleted\"");
+    }
+
+    // ============================================================
+    // Invalid Deserialization Tests
+    // ============================================================
+
+    #[test]
+    fn test_invalid_enum_deserialization() {
+        assert!(serde_json::from_str::<PricingTier>("\"invalid\"").is_err());
+        assert!(serde_json::from_str::<SignalUrgency>("\"CRITICAL\"").is_err()); // case-sensitive
+        assert!(serde_json::from_str::<DeliveryMode>("\"http\"").is_err());
+    }
+
+    // ============================================================
+    // Struct Serialization Tests
+    // ============================================================
+
+    #[test]
+    fn test_delivery_job_serialization() {
+        let job = DeliveryJob {
+            signal_id: "sig_123".to_string(),
+            subscription_id: "sub_456".to_string(),
+            webhook_id: Some("wh_789".to_string()),
+            attempt: 3,
+        };
+
+        let json = serde_json::to_string(&job).unwrap();
+        assert!(json.contains("\"signal_id\":\"sig_123\""));
+        assert!(json.contains("\"attempt\":3"));
+
+        let parsed: DeliveryJob = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.signal_id, "sig_123");
+        assert_eq!(parsed.attempt, 3);
+    }
+
+    #[test]
+    fn test_delivery_job_without_webhook() {
+        let job = DeliveryJob {
+            signal_id: "sig_test".to_string(),
+            subscription_id: "sub_test".to_string(),
+            webhook_id: None,
+            attempt: 1,
+        };
+
+        let json = serde_json::to_string(&job).unwrap();
+        assert!(json.contains("\"webhook_id\":null"));
+
+        let parsed: DeliveryJob = serde_json::from_str(&json).unwrap();
+        assert!(parsed.webhook_id.is_none());
+    }
+}

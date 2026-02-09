@@ -492,4 +492,157 @@ mod tests {
             "delivery-normal"
         );
     }
+
+    // ============================================================
+    // build_payload Edge Case Tests
+    // ============================================================
+
+    fn make_test_channel(id: &str, slug: &str, display_name: &str) -> db::models::Channel {
+        db::models::Channel {
+            id: id.to_string(),
+            slug: slug.to_string(),
+            display_name: display_name.to_string(),
+            publisher_id: "pub_test".to_string(),
+            description: None,
+            category: None,
+            pricing_tier: db::models::PricingTier::Free,
+            price_cents: 0,
+            is_public: true,
+            status: db::models::ChannelStatus::Active,
+            signal_count: 0,
+            subscriber_count: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn make_test_signal(id: &str, title: &str, body: &str, urgency: SignalUrgency) -> db::models::Signal {
+        db::models::Signal {
+            id: id.to_string(),
+            channel_id: "ch_test".to_string(),
+            title: title.to_string(),
+            body: body.to_string(),
+            urgency,
+            metadata: serde_json::json!({}),
+            status: db::models::SignalStatus::Active,
+            delivery_count: 0,
+            delivered_count: 0,
+            failed_count: 0,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn test_build_payload_basic() {
+        let channel = make_test_channel("ch_abc", "tech-news", "Tech News");
+        let signal = make_test_signal("sig_xyz", "Breaking", "Content", SignalUrgency::Normal);
+
+        let payload = build_payload("del_001", Some("wh_001"), &channel, &signal);
+
+        assert_eq!(payload["deliveryId"], "del_001");
+        assert_eq!(payload["webhookId"], "wh_001");
+        assert_eq!(payload["channel"]["id"], "ch_abc");
+        assert_eq!(payload["channel"]["slug"], "tech-news");
+        assert_eq!(payload["channel"]["displayName"], "Tech News");
+        assert_eq!(payload["signal"]["id"], "sig_xyz");
+        assert_eq!(payload["signal"]["title"], "Breaking");
+        assert_eq!(payload["signal"]["body"], "Content");
+    }
+
+    #[test]
+    fn test_build_payload_no_webhook_id() {
+        let channel = make_test_channel("ch_abc", "alerts", "Alerts");
+        let signal = make_test_signal("sig_001", "Alert", "Body", SignalUrgency::High);
+
+        let payload = build_payload("del_002", None, &channel, &signal);
+
+        assert_eq!(payload["deliveryId"], "del_002");
+        assert!(payload["webhookId"].is_null());
+        assert_eq!(payload["channel"]["id"], "ch_abc");
+    }
+
+    #[test]
+    fn test_build_payload_with_special_characters() {
+        let channel = make_test_channel("ch_special", "news-alerts", "News & Alerts <Test>");
+        let signal = make_test_signal(
+            "sig_special",
+            "Alert: \"Breaking\" <News>",
+            "Line1\nLine2\tTabbed \"quoted\"",
+            SignalUrgency::Critical,
+        );
+
+        let payload = build_payload("del_special", Some("wh_test"), &channel, &signal);
+
+        assert_eq!(payload["channel"]["displayName"], "News & Alerts <Test>");
+        assert_eq!(payload["signal"]["title"], "Alert: \"Breaking\" <News>");
+        assert!(payload["signal"]["body"].as_str().unwrap().contains('\n'));
+        assert!(payload["signal"]["body"].as_str().unwrap().contains('\t'));
+    }
+
+    #[test]
+    fn test_build_payload_with_empty_strings() {
+        let channel = make_test_channel("", "", "");
+        let signal = make_test_signal("", "", "", SignalUrgency::Low);
+
+        let payload = build_payload("", None, &channel, &signal);
+
+        assert_eq!(payload["deliveryId"], "");
+        assert_eq!(payload["channel"]["id"], "");
+        assert_eq!(payload["channel"]["slug"], "");
+        assert_eq!(payload["signal"]["id"], "");
+        assert_eq!(payload["signal"]["title"], "");
+    }
+
+    #[test]
+    fn test_build_payload_with_unicode() {
+        let channel = make_test_channel("ch_unicode", "日本語", "日本語チャンネル");
+        let signal = make_test_signal("sig_emoji", "🚀 Launch!", "Emoji: 🎉 中文 العربية", SignalUrgency::Normal);
+
+        let payload = build_payload("del_unicode", Some("wh_unicode"), &channel, &signal);
+
+        assert_eq!(payload["channel"]["slug"], "日本語");
+        assert_eq!(payload["channel"]["displayName"], "日本語チャンネル");
+        assert_eq!(payload["signal"]["title"], "🚀 Launch!");
+        assert!(payload["signal"]["body"].as_str().unwrap().contains("🎉"));
+        assert!(payload["signal"]["body"].as_str().unwrap().contains("中文"));
+    }
+
+    #[test]
+    fn test_build_payload_serialization_roundtrip() {
+        let channel = make_test_channel("ch_roundtrip", "test-channel", "Test Channel");
+        let signal = make_test_signal("sig_roundtrip", "Title", "Body", SignalUrgency::High);
+
+        let payload = build_payload("del_rt", Some("wh_rt"), &channel, &signal);
+        
+        // Ensure it can be serialized to string and back
+        let json_str = serde_json::to_string(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        
+        assert_eq!(parsed["deliveryId"], payload["deliveryId"]);
+        assert_eq!(parsed["channel"]["slug"], payload["channel"]["slug"]);
+        assert_eq!(parsed["signal"]["urgency"], payload["signal"]["urgency"]);
+    }
+
+    #[test]
+    fn test_build_payload_all_urgency_levels() {
+        let channel = make_test_channel("ch_urg", "test", "Test");
+        
+        for urgency in [SignalUrgency::Low, SignalUrgency::Normal, SignalUrgency::High, SignalUrgency::Critical] {
+            let signal = make_test_signal("sig_urg", "Title", "Body", urgency.clone());
+            let payload = build_payload("del_urg", None, &channel, &signal);
+            
+            // Urgency should be serialized (actual format may vary based on serde config)
+            let urgency_value = &payload["signal"]["urgency"];
+            assert!(!urgency_value.is_null(), "Urgency should be present in payload");
+            
+            // Verify it matches the signal's urgency (compare via round-trip)
+            let payload_str = serde_json::to_string(&payload).unwrap();
+            match urgency {
+                SignalUrgency::Low => assert!(payload_str.contains("Low") || payload_str.contains("low")),
+                SignalUrgency::Normal => assert!(payload_str.contains("Normal") || payload_str.contains("normal")),
+                SignalUrgency::High => assert!(payload_str.contains("High") || payload_str.contains("high")),
+                SignalUrgency::Critical => assert!(payload_str.contains("Critical") || payload_str.contains("critical")),
+            }
+        }
+    }
 }

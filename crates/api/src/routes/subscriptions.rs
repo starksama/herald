@@ -18,7 +18,7 @@ pub fn router(state: AppState) -> Router {
             "/v1/subscriptions",
             post(create_subscription).get(list_subscriptions),
         )
-        .route("/v1/subscriptions/:id", delete(delete_subscription))
+        .route("/v1/subscriptions/{id}", delete(delete_subscription))
         .route("/v1/subscriber/me", get(get_subscriber_profile))
         .with_state(state)
 }

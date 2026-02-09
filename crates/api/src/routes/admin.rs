@@ -17,8 +17,8 @@ use db::models::{ApiKeyOwner, DeliveryStatus};
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/admin/dlq", get(list_dlq))
-        .route("/v1/admin/dlq/:id/retry", post(retry_dlq))
-        .route("/v1/admin/signals/:id", get(get_signal_admin))
+        .route("/v1/admin/dlq/{id}/retry", post(retry_dlq))
+        .route("/v1/admin/signals/{id}", get(get_signal_admin))
         .with_state(state)
 }
 

@@ -21,7 +21,7 @@ pub fn router(state: AppState) -> Router {
             "/v1/publisher/api-keys",
             get(list_api_keys).post(create_api_key),
         )
-        .route("/v1/publisher/api-keys/:id", delete(revoke_api_key))
+        .route("/v1/publisher/api-keys/{id}", delete(revoke_api_key))
         .with_state(state)
 }
 

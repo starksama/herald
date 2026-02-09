@@ -6,6 +6,7 @@ use core::types::SignalUrgency as CoreSignalUrgency;
 use db::models::{DeliveryMode, DeliveryStatus, SignalUrgency};
 use serde_json::json;
 use std::time::Instant;
+use tracing::warn;
 
 use crate::WorkerState;
 
@@ -18,6 +19,7 @@ fn convert_urgency(urgency: &SignalUrgency) -> CoreSignalUrgency {
     }
 }
 
+/// Backoff strategy for delivery retries.
 pub fn retry_policy(attempt: u32) -> std::time::Duration {
     match attempt {
         0 => std::time::Duration::from_secs(0),
@@ -230,9 +232,19 @@ async fn schedule_retry_or_dlq(
 
     let delay = retry_policy((attempt + 1) as u32);
     let storage = state.storage.clone();
+    let delivery_id = delivery_id.to_string();
+    let queue = queue.to_string();
     tokio::spawn(async move {
         tokio::time::sleep(delay).await;
-        let _ = storage.push(queue, next_job).await;
+        if let Err(err) = storage.push(&queue, next_job).await {
+            warn!(
+                error = %err,
+                %delivery_id,
+                attempt = attempt + 1,
+                %queue,
+                "failed to enqueue retry delivery job"
+            );
+        }
     });
 
     Ok(false)

@@ -53,13 +53,21 @@ async fn connect_and_run(config: &AgentConfig) -> anyhow::Result<()> {
                 handle_server_message(&forwarder, &mut write, &text).await?;
             }
             Message::Binary(bytes) => {
-                if let Ok(text) = String::from_utf8(bytes) {
-                    handle_server_message(&forwarder, &mut write, &text).await?;
+                match String::from_utf8(bytes) {
+                    Ok(text) => {
+                        handle_server_message(&forwarder, &mut write, &text).await?;
+                    }
+                    Err(err) => {
+                        warn!(error = %err, "received non-utf8 binary message");
+                    }
                 }
             }
             Message::Close(_) => break,
             Message::Ping(payload) => {
-                let _ = write.send(Message::Pong(payload)).await;
+                if let Err(err) = write.send(Message::Pong(payload)).await {
+                    warn!(error = %err, "failed to send pong");
+                    return Err(err.into());
+                }
             }
             Message::Pong(_) => {}
             _ => {}

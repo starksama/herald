@@ -141,3 +141,42 @@ impl Metrics {
 }
 
 pub static METRICS: Lazy<Metrics> = Lazy::new(Metrics::new);
+
+#[cfg(test)]
+mod tests {
+    use super::Metrics;
+
+    #[test]
+    fn metrics_gather_includes_recorded_values() {
+        let metrics = Metrics::new();
+
+        metrics.record_http_request("GET", "/health", 200);
+        metrics.record_http_request("GET", "/health", 200);
+        metrics.record_signal("ch_123", "high");
+        metrics.record_delivery("success");
+        metrics.record_delivery_latency("ch_123", 1.25);
+        metrics.set_queue_depth("delivery-normal", 3);
+
+        let output = metrics.gather();
+
+        assert!(output.contains("herald_http_requests_total"));
+        assert!(output.contains("method=\"GET\""));
+        assert!(output.contains("path=\"/health\""));
+        assert!(output.contains("status=\"200\""));
+        assert!(output.contains("} 2"));
+
+        assert!(output.contains("herald_signals_total"));
+        assert!(output.contains("channel=\"ch_123\""));
+        assert!(output.contains("urgency=\"high\""));
+
+        assert!(output.contains("herald_deliveries_total"));
+        assert!(output.contains("status=\"success\""));
+
+        assert!(output.contains("herald_delivery_latency_seconds_count"));
+        assert!(output.contains("herald_delivery_latency_seconds_sum"));
+
+        assert!(output.contains("herald_queue_depth"));
+        assert!(output.contains("queue=\"delivery-normal\""));
+        assert!(output.contains("} 3"));
+    }
+}

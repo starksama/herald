@@ -183,6 +183,61 @@ async fn deliver_via_webhook(
     }
 }
 
+/// Common retry/DLQ handling for failed deliveries.
+/// Returns Ok(true) if sent to DLQ (max retries), Ok(false) if scheduled for retry.
+async fn schedule_retry_or_dlq(
+    state: &WorkerState,
+    signal: &db::models::Signal,
+    subscription: &db::models::Subscription,
+    payload: &serde_json::Value,
+    delivery_id: &str,
+    attempt: i32,
+    status_code: Option<i32>,
+    error_message: &str,
+    webhook_id: Option<String>,
+) -> anyhow::Result<bool> {
+    if attempt >= 5 {
+        let error_history = json!([{
+            "attempt": attempt,
+            "error": error_message,
+            "statusCode": status_code,
+        }]);
+        let dlq_id = format!("dlq_{}", nanoid::nanoid!(12));
+        db::queries::dead_letter_queue::create(
+            &state.db,
+            &dlq_id,
+            delivery_id,
+            &signal.id,
+            &subscription.id,
+            payload.clone(),
+            error_history,
+        )
+        .await?;
+        return Ok(true);
+    }
+
+    let queue = match signal.urgency {
+        SignalUrgency::High | SignalUrgency::Critical => "delivery-high",
+        _ => "delivery-normal",
+    };
+
+    let next_job = DeliveryJob {
+        signal_id: signal.id.clone(),
+        subscription_id: subscription.id.clone(),
+        webhook_id,
+        attempt: attempt + 1,
+    };
+
+    let delay = retry_policy((attempt + 1) as u32);
+    let storage = state.storage.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        let _ = storage.push(queue, next_job).await;
+    });
+
+    Ok(false)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_webhook_failure(
     state: &WorkerState,
@@ -209,46 +264,18 @@ async fn handle_webhook_failure(
     db::queries::signals::increment_delivery_counts(&state.db, &signal.id, 0, 1, 1).await?;
     db::queries::webhooks::update_failure(&state.db, &webhook.id, Utc::now()).await?;
 
-    if attempt >= 5 {
-        let error_history = json!([
-            {
-                "attempt": attempt,
-                "error": error_message,
-                "statusCode": status_code,
-            }
-        ]);
-        let dlq_id = format!("dlq_{}", nanoid::nanoid!(12));
-        db::queries::dead_letter_queue::create(
-            &state.db,
-            &dlq_id,
-            &delivery_id,
-            &signal.id,
-            &subscription.id,
-            payload.clone(),
-            error_history,
-        )
-        .await?;
-        return Ok(());
-    }
-
-    let queue = match signal.urgency {
-        SignalUrgency::High | SignalUrgency::Critical => "delivery-high",
-        _ => "delivery-normal",
-    };
-
-    let next_job = DeliveryJob {
-        signal_id: signal.id.clone(),
-        subscription_id: subscription.id.clone(),
-        webhook_id: Some(webhook.id.clone()),
-        attempt: attempt + 1,
-    };
-
-    let delay = retry_policy((attempt + 1) as u32);
-    let storage = state.storage.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(delay).await;
-        let _ = storage.push(queue, next_job).await;
-    });
+    schedule_retry_or_dlq(
+        state,
+        signal,
+        subscription,
+        payload,
+        &delivery_id,
+        attempt,
+        status_code,
+        error_message,
+        Some(webhook.id.clone()),
+    )
+    .await?;
 
     Ok(())
 }
@@ -321,7 +348,6 @@ async fn deliver_via_tunnel(
     Ok(true)
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_tunnel_failure(
     state: &WorkerState,
     signal: &db::models::Signal,
@@ -348,46 +374,18 @@ async fn handle_tunnel_failure(
         return Ok(());
     }
 
-    if attempt >= 5 {
-        let error_history = json!([
-            {
-                "attempt": attempt,
-                "error": error_message,
-                "statusCode": null,
-            }
-        ]);
-        let dlq_id = format!("dlq_{}", nanoid::nanoid!(12));
-        db::queries::dead_letter_queue::create(
-            &state.db,
-            &dlq_id,
-            &delivery_id,
-            &signal.id,
-            &subscription.id,
-            payload.clone(),
-            error_history,
-        )
-        .await?;
-        return Ok(());
-    }
-
-    let queue = match signal.urgency {
-        SignalUrgency::High | SignalUrgency::Critical => "delivery-high",
-        _ => "delivery-normal",
-    };
-
-    let next_job = DeliveryJob {
-        signal_id: signal.id.clone(),
-        subscription_id: subscription.id.clone(),
-        webhook_id: subscription.webhook_id.clone(),
-        attempt: attempt + 1,
-    };
-
-    let delay = retry_policy((attempt + 1) as u32);
-    let storage = state.storage.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(delay).await;
-        let _ = storage.push(queue, next_job).await;
-    });
+    schedule_retry_or_dlq(
+        state,
+        signal,
+        subscription,
+        payload,
+        &delivery_id,
+        attempt,
+        None,
+        error_message,
+        subscription.webhook_id.clone(),
+    )
+    .await?;
 
     Ok(())
 }

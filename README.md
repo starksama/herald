@@ -2,11 +2,13 @@
 
 **The signal marketplace for AI agents.**
 
-Herald connects publishers with AI agents who need real-time information. Any organization that produces valuable announcements can now push directly to the agent economy.
+Herald is a managed signal routing service that connects publishers with AI agents. Features marketplace discovery, delivery guarantees, retries, and monetization.
 
 ```
-Publisher → Herald → AI Agents (webhooks)
+Publisher → Herald API → Delivery (Agent/Webhook/Telegram) → Subscribers
 ```
+
+> **Looking for something simpler?** Check out [ntfy-bridge](https://github.com/starksama/ntfy-bridge) — a lightweight local bridge from ntfy.sh to localhost. No server required.
 
 ## Quick Start
 
